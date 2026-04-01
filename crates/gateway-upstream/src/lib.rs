@@ -13,6 +13,7 @@ use tokio::time::timeout;
 
 #[derive(Clone, Debug)]
 pub struct UpstreamRegistry {
+    /// 以集群名索引所有 upstream。
     clusters: Arc<HashMap<String, Arc<UpstreamCluster>>>,
 }
 
@@ -22,6 +23,7 @@ impl UpstreamRegistry {
             .upstreams
             .iter()
             .map(|cluster| {
+                // 每个 endpoint 都有独立状态，这样主动探活和被动失败感知可以共享同一个状态源。
                 let endpoints = cluster
                     .endpoints
                     .iter()
@@ -34,6 +36,7 @@ impl UpstreamRegistry {
                     .collect();
 
                 (
+                    // 注册表按名字挂集群，方便路由命中后 O(1) 查找。
                     cluster.name.clone(),
                     Arc::new(UpstreamCluster {
                         name: cluster.name.clone(),
@@ -52,12 +55,14 @@ impl UpstreamRegistry {
     }
 
     pub fn cluster(&self, name: &str) -> Result<&Arc<UpstreamCluster>> {
+        // 找不到集群直接返回错误，避免静默回落到错误目标。
         self.clusters
             .get(name)
             .ok_or_else(|| GatewayError::NotFound(format!("upstream cluster {}", name)))
     }
 
     pub fn clusters(&self) -> impl Iterator<Item = &Arc<UpstreamCluster>> {
+        // 健康检查循环会遍历这里的只读视图。
         self.clusters.values()
     }
 }
@@ -65,15 +70,21 @@ impl UpstreamRegistry {
 /// 集群内部只维护节点选择与健康状态，不直接掺杂连接池等更重的职责。
 #[derive(Debug)]
 pub struct UpstreamCluster {
+    /// 集群逻辑名。
     pub name: String,
+    /// 当前采用的负载均衡策略。
     pub strategy: LoadBalanceConfig,
+    /// 可选健康检查配置。
     pub health_check: Option<HealthCheckConfig>,
+    /// 这个集群下的所有 endpoint 状态。
     endpoints: Vec<Arc<EndpointState>>,
+    /// 轮询游标。
     cursor: AtomicUsize,
 }
 
 impl UpstreamCluster {
     pub fn next_endpoint(&self) -> Result<UpstreamEndpoint> {
+        // 纯选择场景直接复用更通用的排除式选择逻辑。
         Ok(self.select_endpoint(&[])?.endpoint().clone())
     }
 
@@ -82,7 +93,9 @@ impl UpstreamCluster {
         let healthy: Vec<_> = self
             .endpoints
             .iter()
+            // 只有健康节点才能参与调度。
             .filter(|endpoint| endpoint.is_healthy())
+            // 已经在本次请求里失败过的地址不再重复尝试。
             .filter(|endpoint| {
                 !excluded_addresses
                     .iter()
@@ -91,11 +104,13 @@ impl UpstreamCluster {
             .collect();
 
         if healthy.is_empty() {
+            // 没有健康节点时直接返回，避免继续把流量打到坏节点上。
             return Err(GatewayError::NoHealthyUpstream(self.name.clone()));
         }
 
         let index = match self.strategy {
             LoadBalanceConfig::RoundRobin => {
+                // relaxed 足够，因为这里不依赖严格全局顺序，只需要近似轮询。
                 self.cursor.fetch_add(1, Ordering::Relaxed) % healthy.len()
             }
         };
@@ -104,10 +119,12 @@ impl UpstreamCluster {
     }
 
     pub fn endpoints(&self) -> &[Arc<EndpointState>] {
+        // 主要给健康检查循环只读遍历使用。
         &self.endpoints
     }
 
     pub fn passive_success_threshold(&self) -> u32 {
+        // 没有健康检查配置时，成功一次就恢复健康，保持最小可用策略。
         self.health_check
             .as_ref()
             .map(|config| config.healthy_threshold)
@@ -115,6 +132,7 @@ impl UpstreamCluster {
     }
 
     pub fn passive_failure_threshold(&self) -> u32 {
+        // 没有健康检查配置时，不主动把节点永久摘掉，避免误伤唯一节点。
         self.health_check
             .as_ref()
             .map(|config| config.unhealthy_threshold)
@@ -126,15 +144,20 @@ impl UpstreamCluster {
 /// 这里用原子计数即可满足当前读多写少的场景，不急着引入更复杂的并发结构。
 #[derive(Debug)]
 pub struct EndpointState {
+    /// 节点的静态描述。
     endpoint: UpstreamEndpoint,
+    /// 当前是否健康。
     healthy: AtomicBool,
+    /// 连续成功计数。
     consecutive_successes: AtomicU32,
+    /// 连续失败计数。
     consecutive_failures: AtomicU32,
 }
 
 impl EndpointState {
     fn new(endpoint: UpstreamEndpoint) -> Self {
         Self {
+            // 默认先认为节点健康，让初始流量能打进去。
             endpoint,
             healthy: AtomicBool::new(true),
             consecutive_successes: AtomicU32::new(0),
@@ -143,27 +166,33 @@ impl EndpointState {
     }
 
     pub fn endpoint(&self) -> &UpstreamEndpoint {
+        // 暴露只读 endpoint，避免状态被外部误改。
         &self.endpoint
     }
 
     pub fn is_healthy(&self) -> bool {
+        // 健康位频繁读取，直接用原子布尔保持成本最低。
         self.healthy.load(Ordering::Relaxed)
     }
 
     /// 成功会清空失败计数，并在达到阈值后把节点恢复成健康状态。
     pub fn record_success(&self, healthy_threshold: u32) {
+        // 一次成功会清空失败计数，代表节点开始恢复。
         self.consecutive_failures.store(0, Ordering::Relaxed);
         let successes = self.consecutive_successes.fetch_add(1, Ordering::Relaxed) + 1;
         if successes >= healthy_threshold.max(1) {
+            // 达到阈值后再恢复健康，避免刚恢复时的抖动误判。
             self.healthy.store(true, Ordering::Relaxed);
         }
     }
 
     /// 失败会清空成功计数，并在达到阈值后摘除节点。
     pub fn record_failure(&self, unhealthy_threshold: u32) {
+        // 一次失败会清空成功计数，代表恢复过程被打断。
         self.consecutive_successes.store(0, Ordering::Relaxed);
         let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
         if failures >= unhealthy_threshold.max(1) {
+            // 连续失败达到阈值后才摘除，避免偶发瞬时网络毛刺。
             self.healthy.store(false, Ordering::Relaxed);
         }
     }
@@ -172,6 +201,7 @@ impl EndpointState {
 /// 第一阶段的主动探活先做 TCP connect，
 /// 它不够精细，但能以很低复杂度覆盖“端口是否可连”这个核心问题。
 pub async fn probe_endpoint(endpoint: &EndpointState, config: &HealthCheckConfig) -> bool {
+    // 第一阶段只以 TCP connect 成功与否作为健康判定。
     let result = timeout(
         Duration::from_millis(config.timeout_ms),
         TcpStream::connect(&endpoint.endpoint.address),
@@ -180,10 +210,12 @@ pub async fn probe_endpoint(endpoint: &EndpointState, config: &HealthCheckConfig
 
     match result {
         Ok(Ok(_)) => {
+            // 连上就算成功，让状态机自己决定是否恢复健康。
             endpoint.record_success(config.healthy_threshold);
             true
         }
         Ok(Err(_)) | Err(_) => {
+            // 连接失败或超时都按失败处理。
             endpoint.record_failure(config.unhealthy_threshold);
             false
         }

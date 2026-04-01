@@ -2,7 +2,6 @@
 //! 第一阶段只支持保守的 HTTP/1.1 代理语义，重点是把边界条件和错误路径做扎实。
 
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use gateway_filters::FilterRegistry;
 use gateway_router::Router;
@@ -15,23 +14,33 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 pub struct ProxyService {
+    /// 路由器负责把请求映射到路由定义。
     router: Router,
+    /// 过滤器注册表负责执行请求前后钩子。
     filters: FilterRegistry,
+    /// upstream 注册表负责选出可用节点。
     upstreams: UpstreamRegistry,
+    /// 运行时超时、重试和协议限制。
     timeouts: RuntimeSettings,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompletedRequest {
+    /// 完成转发后的请求上下文。
     pub request: RequestContext,
+    /// 完成转发后的响应上下文。
     pub response: ResponseContext,
+    /// 本次请求实际发生的额外重试次数。
     pub retries: usize,
 }
 
 #[derive(Debug)]
 pub struct ProxyConnectionError {
+    /// 具体错误。
     pub error: GatewayError,
+    /// 如果请求已经解析出来，就把上下文带给日志层。
     pub request: Option<RequestContext>,
+    /// 错误发生前已经消耗的重试次数。
     pub retries: usize,
 }
 
@@ -51,11 +60,13 @@ impl ProxyService {
     }
 
     pub async fn handle(&self, mut request: RequestContext) -> Result<ResponseContext> {
+        // 这个入口主要给内存级测试和后续管理面复用。
         let route = self.router.resolve(&request)?;
         self.filters
             .run_before(&route.filter_names, &mut request)
             .await?;
 
+        // 纯内存入口只验证选路是否正确，不做真实网络转发。
         let selected = self
             .upstreams
             .cluster(&route.upstream_name)?
@@ -64,6 +75,7 @@ impl ProxyService {
         let mut response = ResponseContext::new(200);
         response.upstream = Some(selected.address);
 
+        // 响应后过滤器仍然要跑，保证这条路径和真实流量路径语义一致。
         self.filters
             .run_after(&route.filter_names, &mut response)
             .await?;
@@ -79,21 +91,25 @@ impl ProxyService {
     ) -> std::result::Result<CompletedRequest, ProxyConnectionError> {
         // 这条链路是“真实网络请求”的主路径：
         // 读请求 -> 路由 -> 过滤器 -> 选上游 -> 转发 -> 回写响应。
-        let request = HttpRequest::read_from(downstream, self.timeouts.downstream_read_timeout)
+        let request = HttpRequest::read_from(downstream, &self.timeouts)
             .await
             .map_err(|error| ProxyConnectionError {
+                // 请求还没解析出来前，只能记录连接级错误。
                 error,
                 request: None,
                 retries: 0,
             })?;
+        // 一旦解析成功，就立刻构造标准请求上下文，后续所有逻辑都基于它运行。
         let mut request_context = RequestContext::new(
             listener_name,
             request.host_header(),
             request.path_for_route(),
             request.method,
         );
+        // 客户端地址主要用于日志和补充 X-Forwarded-For。
         request_context.client_addr = Some(client_addr);
 
+        // 路由失败时仍然保留请求上下文，方便 access log 告诉我们“为什么没命中”。
         let route =
             self.router
                 .resolve(&request_context)
@@ -102,6 +118,7 @@ impl ProxyService {
                     request: Some(request_context.clone()),
                     retries: 0,
                 })?;
+        // 请求前过滤器统一放在转发前执行。
         self.filters
             .run_before(&route.filter_names, &mut request_context)
             .await
@@ -111,6 +128,7 @@ impl ProxyService {
                 retries: 0,
             })?;
 
+        // 命中路由后，把目标 upstream 集群取出来作为后续所有尝试的候选集合。
         let cluster = self
             .upstreams
             .cluster(&route.upstream_name)
@@ -119,11 +137,14 @@ impl ProxyService {
                 request: Some(request_context.clone()),
                 retries: 0,
             })?;
+        // 记录这次请求已经尝试失败过的地址，避免重试回到同一个坏节点。
         let mut excluded_addresses = Vec::new();
+        // 所有尝试都失败时，最终会从这里返回最后一个可解释错误。
         let mut final_outcome: Option<std::result::Result<CompletedRequest, ProxyConnectionError>> =
             None;
 
         for attempt in 0..self.timeouts.upstream_retry_attempts {
+            // 每轮都从“健康且这次没失败过”的节点里选一个地址。
             let endpoint_state = match cluster.select_endpoint(&excluded_addresses) {
                 Ok(endpoint) => endpoint,
                 Err(error) if attempt > 0 => break,
@@ -137,12 +158,14 @@ impl ProxyService {
             };
 
             let endpoint = endpoint_state.endpoint().clone();
+            // 与单个 upstream 的交互细节都收口到独立函数里。
             let outcome = self
                 .forward_to_endpoint(&endpoint_state, &request, &request_context)
                 .await;
 
             match outcome {
                 Ok(upstream_bytes) => {
+                    // 只解析状态码，足够支撑当前重试策略和响应上下文。
                     let status_code = parse_status_code(&upstream_bytes).unwrap_or(200);
                     // 第一阶段只对少数典型 5xx 做重试，先避免把非幂等请求重试面铺得太大。
                     if is_retryable_status(status_code)
@@ -163,6 +186,7 @@ impl ProxyService {
 
                     endpoint_state.record_success(cluster.passive_success_threshold());
 
+                    // 当前模型仍然是“读完整个 upstream 响应，再一次性回写”。
                     downstream.write_all(&upstream_bytes).await.map_err(|err| {
                         ProxyConnectionError {
                             error: GatewayError::Io(format!("write downstream response: {}", err)),
@@ -179,6 +203,7 @@ impl ProxyService {
                             retries: attempt,
                         })?;
 
+                    // 回写完成后再生成响应上下文，保证记录的是最终状态。
                     let mut response = ResponseContext::new(status_code);
                     response.upstream = Some(endpoint.address);
 
@@ -198,6 +223,7 @@ impl ProxyService {
                     });
                 }
                 Err(error) => {
+                    // 连接失败、读超时或协议错误都先按一次失败记入节点状态。
                     endpoint_state.record_failure(cluster.passive_failure_threshold());
                     excluded_addresses.push(endpoint.address.clone());
                     final_outcome = Some(Err(ProxyConnectionError {
@@ -210,6 +236,7 @@ impl ProxyService {
         }
 
         final_outcome.unwrap_or_else(|| {
+            // 正常情况下走到这里意味着已经没有可重试节点。
             Err(ProxyConnectionError {
                 error: GatewayError::NoHealthyUpstream(route.upstream_name.clone()),
                 request: Some(request_context),
@@ -227,6 +254,7 @@ impl ProxyService {
         // 这里把“与单个 upstream 交互”收口成独立函数，
         // 方便后面接入更细的错误分类、重试预算和连接池。
         let endpoint = endpoint_state.endpoint();
+        // 建连阶段受 connect timeout 保护，避免坏节点无限拖住请求。
         let mut upstream = timeout(
             self.timeouts.upstream_connect_timeout,
             TcpStream::connect(&endpoint.address),
@@ -246,6 +274,7 @@ impl ProxyService {
             .write_to_upstream(&mut upstream, request_context)
             .await?;
 
+        // 当前第一版先把响应整段读完，后面再升级成流式模型。
         let mut upstream_bytes = Vec::new();
         timeout(
             self.timeouts.upstream_read_timeout,
@@ -261,6 +290,7 @@ impl ProxyService {
         .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
 
         if upstream_bytes.is_empty() {
+            // 空响应时当前实现无法继续判断状态码和 body，直接按协议错误处理。
             return Err(GatewayError::Protocol(
                 "upstream returned an empty response".into(),
             ));
@@ -272,16 +302,22 @@ impl ProxyService {
 
 #[derive(Clone, Debug)]
 struct HttpRequest {
+    /// 归一化后的请求方法。
     method: HttpMethod,
+    /// 原始 request target，保留 query string 以便转发时原样带过去。
     target: String,
+    /// 协议版本字符串，目前只接受 HTTP/1.1。
     version: String,
+    /// 按原始顺序保留的请求头列表。
     headers: Vec<(String, String)>,
+    /// 已经读入内存的请求体。
     body: Vec<u8>,
 }
 
 impl HttpRequest {
-    async fn read_from(stream: &mut TcpStream, read_timeout: Duration) -> Result<Self> {
+    async fn read_from(stream: &mut TcpStream, settings: &RuntimeSettings) -> Result<Self> {
         const MAX_HEADER_BYTES: usize = 64 * 1024;
+        let read_timeout = settings.downstream_read_timeout;
         let mut buffer = Vec::with_capacity(2048);
         let mut temp = [0_u8; 2048];
 
@@ -319,6 +355,11 @@ impl HttpRequest {
         let request_line = lines
             .next()
             .ok_or_else(|| GatewayError::Protocol("missing request line".into()))?;
+        if request_line.len() > settings.max_request_line_bytes {
+            return Err(GatewayError::Protocol(
+                "request line exceeds configured maximum size".into(),
+            ));
+        }
         let mut request_parts = request_line.split_whitespace();
         let method = request_parts
             .next()
@@ -328,10 +369,20 @@ impl HttpRequest {
             .next()
             .ok_or_else(|| GatewayError::Protocol("missing request target".into()))?
             .to_string();
+        if !target.starts_with('/') {
+            return Err(GatewayError::Unsupported(
+                "only origin-form request targets are supported".into(),
+            ));
+        }
         let version = request_parts
             .next()
             .ok_or_else(|| GatewayError::Protocol("missing request version".into()))?
             .to_string();
+        if request_parts.next().is_some() {
+            return Err(GatewayError::Protocol(
+                "request line contains unexpected trailing tokens".into(),
+            ));
+        }
 
         if version != "HTTP/1.1" {
             return Err(GatewayError::Unsupported(format!(
@@ -345,13 +396,30 @@ impl HttpRequest {
             if line.is_empty() {
                 continue;
             }
+            if headers.len() >= settings.max_request_headers {
+                return Err(GatewayError::Protocol(
+                    "request contains too many headers".into(),
+                ));
+            }
             let (name, value) = line
                 .split_once(':')
                 .ok_or_else(|| GatewayError::Protocol(format!("invalid header line {}", line)))?;
-            headers.push((name.trim().to_string(), value.trim().to_string()));
+            let name = name.trim();
+            if !is_valid_header_name(name) {
+                return Err(GatewayError::Protocol(format!(
+                    "invalid header name {}",
+                    name
+                )));
+            }
+            headers.push((name.to_string(), value.trim().to_string()));
         }
 
         let content_length = parse_content_length(&headers)?;
+        if content_length > settings.max_request_body_bytes {
+            return Err(GatewayError::Protocol(
+                "request body exceeds configured maximum size".into(),
+            ));
+        }
         let mut body = buffer[(header_end + 4)..].to_vec();
 
         if header_has_transfer_encoding(&headers) {
@@ -379,14 +447,7 @@ impl HttpRequest {
 
         // HTTP/1.1 的 Host 头是强约束，缺失时直接拒绝，
         // 这样可以减少后续路由歧义和请求走私风险。
-        if headers
-            .iter()
-            .all(|(name, value)| !name.eq_ignore_ascii_case("host") || value.is_empty())
-        {
-            return Err(GatewayError::Protocol(
-                "host header is required for http/1.1 requests".into(),
-            ));
-        }
+        validate_host_header(&headers)?;
 
         Ok(Self {
             method,
@@ -507,10 +568,48 @@ fn parse_content_length(headers: &[(String, String)]) -> Result<usize> {
     Ok(content_length.unwrap_or(0))
 }
 
+fn validate_host_header(headers: &[(String, String)]) -> Result<()> {
+    let host_values: Vec<_> = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("host"))
+        .map(|(_, value)| value.as_str())
+        .collect();
+
+    if host_values.is_empty() {
+        return Err(GatewayError::Protocol(
+            "host header is required for http/1.1 requests".into(),
+        ));
+    }
+    if host_values.len() > 1 {
+        return Err(GatewayError::Protocol(
+            "duplicate host headers are not allowed".into(),
+        ));
+    }
+    if host_values[0].is_empty() {
+        return Err(GatewayError::Protocol(
+            "host header must not be empty".into(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn header_has_transfer_encoding(headers: &[(String, String)]) -> bool {
     headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
+}
+
+fn is_valid_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.as_bytes().iter().all(|byte| {
+            matches!(
+                *byte,
+                b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.'
+                    | b'^' | b'_' | b'`' | b'|' | b'~'
+                    | b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z'
+            )
+        })
 }
 
 fn is_hop_by_hop_header(name: &str) -> bool {
@@ -591,7 +690,7 @@ mod tests {
 
         tokio::spawn(async move {
             let (mut stream, _) = backend.accept().await.expect("accept backend");
-            let request = HttpRequest::read_from(&mut stream, Duration::from_secs(1))
+            let request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
                 .await
                 .expect("read backend request");
             assert_eq!(request.path_for_route(), "/hello");
@@ -867,7 +966,7 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept connection");
-            HttpRequest::read_from(&mut stream, Duration::from_secs(1)).await
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
         });
 
         let mut client = TcpStream::connect(addr).await.expect("connect listener");
@@ -896,7 +995,7 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept connection");
-            HttpRequest::read_from(&mut stream, Duration::from_secs(1)).await
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
         });
 
         let mut client = TcpStream::connect(addr).await.expect("connect listener");
@@ -926,7 +1025,7 @@ mod tests {
 
         tokio::spawn(async move {
             let (mut stream, _) = backend.accept().await.expect("accept backend");
-            let request = HttpRequest::read_from(&mut stream, Duration::from_secs(1))
+            let request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
                 .await
                 .expect("read backend request");
             assert_eq!(request.path_for_route(), "/retry");
@@ -1022,5 +1121,158 @@ mod tests {
         let bytes = error_response(&GatewayError::RouteNotMatched);
         let text = String::from_utf8(bytes).expect("utf-8 response");
         assert!(text.starts_with("HTTP/1.1 404 Not Found"));
+    }
+
+    #[tokio::test]
+    async fn rejects_duplicate_host_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"GET /hello HTTP/1.1\r\nHost: one.test\r\nHost: two.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Protocol(message)) => {
+                assert!(message.contains("duplicate host"));
+            }
+            other => panic!("expected duplicate host error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_request_target_that_is_not_origin_form() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"GET http://example.test/hello HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Unsupported(message)) => {
+                assert!(message.contains("origin-form"));
+            }
+            other => panic!("expected origin-form error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_request_with_too_many_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            let settings = RuntimeSettings {
+                max_request_headers: 2,
+                ..RuntimeSettings::default()
+            };
+            HttpRequest::read_from(&mut stream, &settings).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"GET /hello HTTP/1.1\r\nHost: example.test\r\nX-One: 1\r\nX-Two: 2\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Protocol(message)) => {
+                assert!(message.contains("too many headers"));
+            }
+            other => panic!("expected header count error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_request_body_larger_than_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            let settings = RuntimeSettings {
+                max_request_body_bytes: 4,
+                ..RuntimeSettings::default()
+            };
+            HttpRequest::read_from(&mut stream, &settings).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nContent-Length: 5\r\n\r\nhello",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Protocol(message)) => {
+                assert!(message.contains("body exceeds"));
+            }
+            other => panic!("expected body limit error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_header_name() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"GET /hello HTTP/1.1\r\nHost: example.test\r\nBad Header: 1\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Protocol(message)) => {
+                assert!(message.contains("invalid header name"));
+            }
+            other => panic!("expected invalid header name error, got {:?}", other),
+        }
     }
 }

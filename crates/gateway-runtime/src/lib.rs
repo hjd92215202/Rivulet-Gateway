@@ -15,14 +15,19 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 pub struct GatewayApp {
+    /// 原始配置快照，供摘要输出和后台任务读取。
     config: GatewayConfigFile,
+    /// 负责真正处理请求转发的代理服务。
     proxy: ProxyService,
+    /// 所有 upstream 集群及其运行时状态。
     upstreams: UpstreamRegistry,
+    /// 全局运行时指标。
     stats: Shared<RuntimeStats>,
 }
 
 impl GatewayApp {
     pub fn from_config(config: GatewayConfigFile) -> Self {
+        // 配置在这里一次性装配成运行时对象，避免主逻辑里反复解析和构造。
         let router = Router::from_config(&config);
         let filters = gateway_filters::FilterRegistry::with_defaults();
         let upstreams = UpstreamRegistry::from_config(&config);
@@ -51,6 +56,7 @@ impl GatewayApp {
     }
 
     pub fn stats_snapshot(&self) -> RuntimeStatsSnapshot {
+        // 暴露快照而不是原始原子字段，避免外部误改内部状态。
         self.stats.snapshot()
     }
 
@@ -66,6 +72,7 @@ impl GatewayApp {
 
         for cluster in shared.upstreams.clusters() {
             if cluster.health_check.is_some() {
+                // 每个启用主动探活的集群独立起一个后台任务。
                 let app = Arc::clone(&shared);
                 let cluster_name = cluster.name.clone();
                 let cluster_shutdown = shutdown_rx.clone();
@@ -76,6 +83,7 @@ impl GatewayApp {
         }
 
         for listener in shared.config.listeners.clone() {
+            // listener 在启动阶段先完成 bind，尽早发现端口冲突等问题。
             let tcp_listener = TcpListener::bind(&listener.address)
                 .await
                 .map_err(|err| GatewayError::Io(format!("bind {}: {}", listener.address, err)))?;
@@ -96,14 +104,17 @@ impl GatewayApp {
         }
 
         shutdown.await;
+        // 所有后台任务统一消费这个停止信号。
         let _ = shutdown_tx.send(true);
 
         for handle in handles {
+            // 等待 listener 和健康检查循环停止，确保不会再产生新工作。
             handle
                 .await
                 .map_err(|err| GatewayError::Io(format!("listener task join error: {}", err)))??;
         }
 
+        // 后台任务停掉后，再等待在途连接自然排空。
         wait_for_connection_drain(
             Arc::clone(&shared),
             shared.config.runtime_settings().graceful_shutdown,
@@ -116,9 +127,13 @@ impl GatewayApp {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct GatewaySummary {
+    /// listener 数量。
     pub listeners: usize,
+    /// route 数量。
     pub routes: usize,
+    /// upstream 数量。
     pub upstreams: usize,
+    /// worker 线程数量。
     pub worker_threads: usize,
 }
 
@@ -133,15 +148,18 @@ async fn listener_loop(
         tokio::select! {
             changed = shutdown.changed() => {
                 match changed {
+                    // 收到停止信号后不再 accept 新连接。
                     Ok(_) | Err(_) => break,
                 }
             }
             accepted = listener.accept() => {
+                // 每个连接都放到独立任务里，避免相互阻塞。
                 let (mut stream, client_addr) = accepted
                     .map_err(|err| GatewayError::Io(format!("accept on {}: {}", listener_address, err)))?;
                 let app = Arc::clone(&app);
                 let listener_name = listener_name.clone();
                 tokio::spawn(async move {
+                    // 连接一进来就记录活动连接数和请求开始时间。
                     app.stats.record_connection_opened();
                     app.stats.record_request_started();
                     let started_at = Instant::now();
@@ -150,6 +168,7 @@ async fn listener_loop(
                     // 所以这里把错误就地转换成 HTTP 响应返回给客户端。
                     match app.proxy.handle_connection(&listener_name, &mut stream, client_addr).await {
                         Ok(completed) => {
+                            // 成功路径记录状态码、重试次数和 access log。
                             app.stats.record_request_completed(completed.response.status_code);
                             app.stats.record_retries(completed.retries);
                             emit_access_log(&AccessLogRecord::success(
@@ -160,6 +179,7 @@ async fn listener_loop(
                             ));
                         }
                         Err(error) => {
+                            // 失败路径同样要打点和输出 access log，避免观测黑洞。
                             let status_code = status_code_for_error(&error.error);
                             app.stats.record_request_completed(status_code);
                             app.stats.record_retries(error.retries);
@@ -178,6 +198,7 @@ async fn listener_loop(
                         }
                     }
 
+                    // 连接任务结束时统一归还活动连接计数。
                     app.stats.record_connection_closed();
                 });
             }
@@ -192,6 +213,7 @@ async fn health_check_loop(
     cluster_name: String,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
+    // 先拿到集群和健康检查配置，后续循环只读使用。
     let cluster = app.upstreams.cluster(&cluster_name)?.clone();
     let config = cluster.health_check.clone().ok_or_else(|| {
         GatewayError::InvalidConfig(format!("cluster {} missing health config", cluster_name))
@@ -202,12 +224,14 @@ async fn health_check_loop(
         tokio::select! {
             changed = shutdown.changed() => {
                 match changed {
+                    // 收到停止信号后退出探测循环。
                     Ok(_) | Err(_) => break,
                 }
             }
             _ = ticker.tick() => {
                 // 健康检查目前串行执行，先用更简单、可预测的行为换取可维护性。
                 for endpoint in cluster.endpoints() {
+                    // 单个 endpoint 的探测失败不会影响其他节点继续探测。
                     let _ = probe_endpoint(endpoint.as_ref(), &config).await;
                 }
             }
@@ -218,12 +242,15 @@ async fn health_check_loop(
 }
 
 async fn wait_for_connection_drain(app: Arc<GatewayApp>, timeout: Duration) {
+    // 这一段逻辑只负责等待已有连接自然结束，不会再接收新连接。
     let started_at = Instant::now();
 
     while started_at.elapsed() < timeout {
         if app.stats.snapshot().active_connections == 0 {
+            // 没有活动连接时可以提前结束等待。
             break;
         }
+        // 先用短周期轮询，保持实现和行为都足够直观。
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }

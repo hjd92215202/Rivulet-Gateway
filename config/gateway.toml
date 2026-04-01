@@ -5,6 +5,9 @@ downstream_read_timeout_ms = 5000
 upstream_connect_timeout_ms = 3000
 upstream_read_timeout_ms = 5000
 upstream_retry_attempts = 2
+max_request_line_bytes = 8192
+max_request_headers = 100
+max_request_body_bytes = 1048576
 
 [[listeners]]
 name = "public-http"
