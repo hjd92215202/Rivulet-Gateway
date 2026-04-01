@@ -70,10 +70,19 @@ pub struct UpstreamCluster {
 
 impl UpstreamCluster {
     pub fn next_endpoint(&self) -> Result<UpstreamEndpoint> {
+        Ok(self.select_endpoint(&[])?.endpoint().clone())
+    }
+
+    pub fn select_endpoint(&self, excluded_addresses: &[String]) -> Result<Arc<EndpointState>> {
         let healthy: Vec<_> = self
             .endpoints
             .iter()
             .filter(|endpoint| endpoint.is_healthy())
+            .filter(|endpoint| {
+                !excluded_addresses
+                    .iter()
+                    .any(|item| item == &endpoint.endpoint.address)
+            })
             .collect();
 
         if healthy.is_empty() {
@@ -86,11 +95,25 @@ impl UpstreamCluster {
             }
         };
 
-        Ok(healthy[index].endpoint.clone())
+        Ok(Arc::clone(healthy[index]))
     }
 
     pub fn endpoints(&self) -> &[Arc<EndpointState>] {
         &self.endpoints
+    }
+
+    pub fn passive_success_threshold(&self) -> u32 {
+        self.health_check
+            .as_ref()
+            .map(|config| config.healthy_threshold)
+            .unwrap_or(1)
+    }
+
+    pub fn passive_failure_threshold(&self) -> u32 {
+        self.health_check
+            .as_ref()
+            .map(|config| config.unhealthy_threshold)
+            .unwrap_or(u32::MAX)
     }
 }
 

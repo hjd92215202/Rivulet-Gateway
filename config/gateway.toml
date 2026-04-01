@@ -4,6 +4,7 @@ graceful_shutdown_secs = 30
 downstream_read_timeout_ms = 5000
 upstream_connect_timeout_ms = 3000
 upstream_read_timeout_ms = 5000
+upstream_retry_attempts = 2
 
 [[listeners]]
 name = "public-http"

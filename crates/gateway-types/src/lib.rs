@@ -141,6 +141,7 @@ pub struct RuntimeSettings {
     pub downstream_read_timeout: Duration,
     pub upstream_connect_timeout: Duration,
     pub upstream_read_timeout: Duration,
+    pub upstream_retry_attempts: usize,
 }
 
 impl Default for RuntimeSettings {
@@ -151,6 +152,7 @@ impl Default for RuntimeSettings {
             downstream_read_timeout: Duration::from_secs(5),
             upstream_connect_timeout: Duration::from_secs(3),
             upstream_read_timeout: Duration::from_secs(5),
+            upstream_retry_attempts: 2,
         }
     }
 }

@@ -94,6 +94,7 @@ impl GatewayConfigFile {
                 self.runtime.upstream_connect_timeout_ms,
             ),
             upstream_read_timeout: Duration::from_millis(self.runtime.upstream_read_timeout_ms),
+            upstream_retry_attempts: self.runtime.upstream_retry_attempts.max(1),
         }
     }
 }
@@ -110,6 +111,8 @@ pub struct RuntimeConfig {
     pub upstream_connect_timeout_ms: u64,
     #[serde(default = "default_upstream_read_timeout_ms")]
     pub upstream_read_timeout_ms: u64,
+    #[serde(default = "default_upstream_retry_attempts")]
+    pub upstream_retry_attempts: usize,
 }
 
 impl Default for RuntimeConfig {
@@ -120,6 +123,7 @@ impl Default for RuntimeConfig {
             downstream_read_timeout_ms: default_downstream_read_timeout_ms(),
             upstream_connect_timeout_ms: default_upstream_connect_timeout_ms(),
             upstream_read_timeout_ms: default_upstream_read_timeout_ms(),
+            upstream_retry_attempts: default_upstream_retry_attempts(),
         }
     }
 }
@@ -245,6 +249,10 @@ fn default_upstream_connect_timeout_ms() -> u64 {
 
 fn default_upstream_read_timeout_ms() -> u64 {
     5_000
+}
+
+fn default_upstream_retry_attempts() -> usize {
+    2
 }
 
 fn default_health_check_interval_ms() -> u64 {

@@ -6,7 +6,7 @@ use gateway_router::Router;
 use gateway_types::{
     GatewayError, HttpMethod, RequestContext, ResponseContext, Result, RuntimeSettings,
 };
-use gateway_upstream::UpstreamRegistry;
+use gateway_upstream::{EndpointState, UpstreamRegistry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -75,11 +75,74 @@ impl ProxyService {
             .run_before(&route.filter_names, &mut request_context)
             .await?;
 
-        let endpoint = self
-            .upstreams
-            .cluster(&route.upstream_name)?
-            .next_endpoint()?;
+        let cluster = self.upstreams.cluster(&route.upstream_name)?;
+        let mut excluded_addresses = Vec::new();
+        let mut final_outcome = None;
 
+        for attempt in 0..self.timeouts.upstream_retry_attempts {
+            let endpoint_state = match cluster.select_endpoint(&excluded_addresses) {
+                Ok(endpoint) => endpoint,
+                Err(error) if attempt > 0 => break,
+                Err(error) => return Err(error),
+            };
+
+            let endpoint = endpoint_state.endpoint().clone();
+            let outcome = self
+                .forward_to_endpoint(&endpoint_state, &request, &request_context)
+                .await;
+
+            match outcome {
+                Ok(upstream_bytes) => {
+                    let status_code = parse_status_code(&upstream_bytes).unwrap_or(200);
+                    if is_retryable_status(status_code)
+                        && attempt + 1 < self.timeouts.upstream_retry_attempts
+                    {
+                        endpoint_state.record_failure(cluster.passive_failure_threshold());
+                        excluded_addresses.push(endpoint.address.clone());
+                        final_outcome = Some(Err(GatewayError::Io(format!(
+                            "retryable upstream status {}",
+                            status_code
+                        ))));
+                        continue;
+                    }
+
+                    endpoint_state.record_success(cluster.passive_success_threshold());
+
+                    downstream.write_all(&upstream_bytes).await.map_err(|err| {
+                        GatewayError::Io(format!("write downstream response: {}", err))
+                    })?;
+                    downstream.flush().await.map_err(|err| {
+                        GatewayError::Io(format!("flush downstream response: {}", err))
+                    })?;
+
+                    let mut response = ResponseContext::new(status_code);
+                    response.upstream = Some(endpoint.address);
+
+                    self.filters
+                        .run_after(&route.filter_names, &mut response)
+                        .await?;
+
+                    return Ok(());
+                }
+                Err(error) => {
+                    endpoint_state.record_failure(cluster.passive_failure_threshold());
+                    excluded_addresses.push(endpoint.address.clone());
+                    final_outcome = Some(Err(error));
+                }
+            }
+        }
+
+        final_outcome
+            .unwrap_or_else(|| Err(GatewayError::NoHealthyUpstream(route.upstream_name.clone())))
+    }
+
+    async fn forward_to_endpoint(
+        &self,
+        endpoint_state: &EndpointState,
+        request: &HttpRequest,
+        request_context: &RequestContext,
+    ) -> Result<Vec<u8>> {
+        let endpoint = endpoint_state.endpoint();
         let mut upstream = timeout(
             self.timeouts.upstream_connect_timeout,
             TcpStream::connect(&endpoint.address),
@@ -96,7 +159,7 @@ impl ProxyService {
         })?;
 
         request
-            .write_to_upstream(&mut upstream, &request_context)
+            .write_to_upstream(&mut upstream, request_context)
             .await?;
 
         let mut upstream_bytes = Vec::new();
@@ -119,24 +182,7 @@ impl ProxyService {
             ));
         }
 
-        downstream
-            .write_all(&upstream_bytes)
-            .await
-            .map_err(|err| GatewayError::Io(format!("write downstream response: {}", err)))?;
-        downstream
-            .flush()
-            .await
-            .map_err(|err| GatewayError::Io(format!("flush downstream response: {}", err)))?;
-
-        let status_code = parse_status_code(&upstream_bytes).unwrap_or(200);
-        let mut response = ResponseContext::new(status_code);
-        response.upstream = Some(endpoint.address);
-
-        self.filters
-            .run_after(&route.filter_names, &mut response)
-            .await?;
-
-        Ok(())
+        Ok(upstream_bytes)
     }
 }
 
@@ -369,6 +415,10 @@ fn parse_status_code(bytes: &[u8]) -> Option<u16> {
     code.parse::<u16>().ok()
 }
 
+fn is_retryable_status(status_code: u16) -> bool {
+    matches!(status_code, 500 | 502 | 503 | 504)
+}
+
 pub fn error_response(error: &GatewayError) -> Vec<u8> {
     let (status, reason) = match error {
         GatewayError::RouteNotMatched => (404_u16, "Not Found"),
@@ -570,5 +620,107 @@ mod tests {
             }
             other => panic!("expected upstream timeout error, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn retries_on_connect_failure_and_uses_next_endpoint() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+        let reserved = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve dead port");
+        let dead_addr = reserved.local_addr().expect("dead addr");
+        drop(reserved);
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let request = HttpRequest::read_from(&mut stream, Duration::from_secs(1))
+                .await
+                .expect("read backend request");
+            assert_eq!(request.path_for_route(), "/retry");
+
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nretried",
+                )
+                .await
+                .expect("write backend response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                upstream_retry_attempts: 2,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                endpoints: vec![
+                    EndpointConfig {
+                        address: dead_addr.to_string(),
+                        weight: 1,
+                    },
+                    EndpointConfig {
+                        address: backend_addr.to_string(),
+                        weight: 1,
+                    },
+                ],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+                .expect("proxy request");
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /retry HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        server.await.expect("gateway task");
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+        assert!(text.ends_with("retried"));
     }
 }
