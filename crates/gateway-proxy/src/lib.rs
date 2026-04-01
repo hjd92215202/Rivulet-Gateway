@@ -167,9 +167,8 @@ impl ProxyService {
                 .await;
 
             match outcome {
-                Ok(upstream_bytes) => {
-                    // 只解析状态码，足够支撑当前重试策略和响应上下文。
-                    let status_code = parse_status_code(&upstream_bytes).unwrap_or(200);
+                Ok(upstream_response) => {
+                    let status_code = upstream_response.status_code;
                     // 第一阶段只对少数典型 5xx 做重试，先避免把非幂等请求重试面铺得太大。
                     if is_retryable_status(status_code)
                         && attempt + 1 < policy.upstream_retry_attempts
@@ -190,7 +189,10 @@ impl ProxyService {
                     endpoint_state.record_success(cluster.passive_success_threshold());
 
                     // 当前模型仍然是“读完整个 upstream 响应，再一次性回写”。
-                    downstream.write_all(&upstream_bytes).await.map_err(|err| {
+                    downstream
+                        .write_all(&upstream_response.bytes)
+                        .await
+                        .map_err(|err| {
                         ProxyConnectionError {
                             error: GatewayError::Io(format!("write downstream response: {}", err)),
                             request: Some(request_context.clone()),
@@ -256,7 +258,7 @@ impl ProxyService {
         // 杩欓噷浼犲叆鐨勫凡缁忔槸鏈€缁堢‘瀹氬ソ鐨勭瓥鐣ワ紝
         // 鎵€浠ヤ笌鍗曚釜 upstream 鐨勪氦浜掕繃绋嬩笉鐢ㄥ啀鍏虫敞绛栫暐浼樺厛绾ч棶棰樸€?
         policy: ResolvedProxyPolicy,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<UpstreamResponse> {
         // 这里把“与单个 upstream 交互”收口成独立函数，
         // 方便后面接入更细的错误分类、重试预算和连接池。
         let endpoint = endpoint_state.endpoint();
@@ -280,30 +282,161 @@ impl ProxyService {
             .write_to_upstream(&mut upstream, request_context)
             .await?;
 
-        // 当前第一版先把响应整段读完，后面再升级成流式模型。
-        let mut upstream_bytes = Vec::new();
-        timeout(
-            policy.upstream_read_timeout,
-            upstream.read_to_end(&mut upstream_bytes),
-        )
-        .await
-        .map_err(|_| {
-            GatewayError::Io(format!(
-                "read upstream response timed out after {:?}",
-                policy.upstream_read_timeout
-            ))
-        })?
-        .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
+        read_upstream_response(&mut upstream, policy, &self.timeouts).await
+    }
+}
 
-        if upstream_bytes.is_empty() {
-            // 空响应时当前实现无法继续判断状态码和 body，直接按协议错误处理。
+#[derive(Clone, Debug)]
+struct UpstreamResponse {
+    /// 完整上游响应字节，会被原样回写给下游。
+    bytes: Vec<u8>,
+    /// 已经校验过的上游状态码，供重试策略直接使用。
+    status_code: u16,
+}
+
+async fn read_upstream_response(
+    upstream: &mut TcpStream,
+    policy: ResolvedProxyPolicy,
+    settings: &RuntimeSettings,
+) -> Result<UpstreamResponse> {
+    let mut buffer = Vec::with_capacity(4096);
+    let mut temp = [0_u8; 2048];
+
+    // 第一段只负责把响应头读完整，并在边界超限前及时失败。
+    let header_end = loop {
+        if let Some(position) = find_header_end(&buffer) {
+            break position;
+        }
+        if buffer.len() >= settings.max_upstream_header_bytes {
             return Err(GatewayError::Protocol(
-                "upstream returned an empty response".into(),
+                "upstream response headers exceed configured maximum size".into(),
             ));
         }
+        let read = timeout(policy.upstream_read_timeout, upstream.read(&mut temp))
+            .await
+            .map_err(|_| {
+                GatewayError::Io(format!(
+                    "read upstream response timed out after {:?}",
+                    policy.upstream_read_timeout
+                ))
+            })?
+            .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
+        if read == 0 {
+            return Err(GatewayError::Protocol(
+                "upstream closed connection before response headers completed".into(),
+            ));
+        }
+        buffer.extend_from_slice(&temp[..read]);
+    };
 
-        Ok(upstream_bytes)
+    let status_code = validate_upstream_response_head(&buffer[..header_end], settings)?;
+
+    // 头部之后已经落入缓冲区的剩余字节就属于响应体，需要立刻做一次限额检查。
+    let mut body_bytes = buffer.len().saturating_sub(header_end + 4);
+    if body_bytes > settings.max_upstream_body_bytes {
+        return Err(GatewayError::Protocol(
+            "upstream response body exceeds configured maximum size".into(),
+        ));
     }
+
+    // 头部合法后继续把剩余 body 读完，但依旧受总大小约束保护。
+    loop {
+        let read = timeout(policy.upstream_read_timeout, upstream.read(&mut temp))
+            .await
+            .map_err(|_| {
+                GatewayError::Io(format!(
+                    "read upstream response timed out after {:?}",
+                    policy.upstream_read_timeout
+                ))
+            })?
+            .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
+        if read == 0 {
+            break;
+        }
+        body_bytes += read;
+        if body_bytes > settings.max_upstream_body_bytes {
+            return Err(GatewayError::Protocol(
+                "upstream response body exceeds configured maximum size".into(),
+            ));
+        }
+        buffer.extend_from_slice(&temp[..read]);
+    }
+
+    // 到这里说明状态行、头部和 body 都已经通过边界校验。
+    if buffer.is_empty() {
+        return Err(GatewayError::Protocol(
+            "upstream returned an empty response".into(),
+        ));
+    }
+    Ok(UpstreamResponse {
+        bytes: buffer,
+        status_code,
+    })
+}
+
+fn validate_upstream_response_head(head_bytes: &[u8], settings: &RuntimeSettings) -> Result<u16> {
+    let head = String::from_utf8(head_bytes.to_vec())
+        .map_err(|_| GatewayError::Protocol("upstream response head is not valid utf-8".into()))?;
+    let mut lines = head.split("\r\n");
+    let status_line = lines
+        .next()
+        .ok_or_else(|| GatewayError::Protocol("missing upstream status line".into()))?;
+    if status_line.len() > settings.max_upstream_status_line_bytes {
+        return Err(GatewayError::Protocol(
+            "upstream status line exceeds configured maximum size".into(),
+        ));
+    }
+
+    let mut parts = status_line.split_whitespace();
+    let version = parts
+        .next()
+        .ok_or_else(|| GatewayError::Protocol("missing upstream http version".into()))?;
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        return Err(GatewayError::Unsupported(format!(
+            "upstream http version {}",
+            version
+        )));
+    }
+    let status_code = parts
+        .next()
+        .ok_or_else(|| GatewayError::Protocol("missing upstream status code".into()))?
+        .parse::<u16>()
+        .map_err(|_| GatewayError::Protocol("invalid upstream status code".into()))?;
+    if !(100..=599).contains(&status_code) {
+        return Err(GatewayError::Protocol(
+            "upstream status code is outside supported range".into(),
+        ));
+    }
+    if parts.next().is_none() {
+        return Err(GatewayError::Protocol(
+            "upstream reason phrase must not be empty".into(),
+        ));
+    }
+
+    let mut header_count = 0;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        header_count += 1;
+        if header_count > settings.max_upstream_headers {
+            return Err(GatewayError::Protocol(
+                "upstream response contains too many headers".into(),
+            ));
+        }
+        let (name, _value) = line.split_once(':').ok_or_else(|| {
+            GatewayError::Protocol(format!("invalid upstream header line {}", line))
+        })?;
+        let name = name.trim();
+        if !is_valid_header_name(name) {
+            return Err(GatewayError::Protocol(format!(
+                "invalid upstream header name {}",
+                name
+            )));
+        }
+    }
+
+    Ok(status_code)
 }
 
 #[derive(Clone, Debug)]
@@ -628,16 +761,6 @@ fn is_hop_by_hop_header(name: &str) -> bool {
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
-}
-
-/// 这里只取状态行里的状态码，足够支撑当前重试和响应上下文。
-fn parse_status_code(bytes: &[u8]) -> Option<u16> {
-    let head = bytes.split(|byte| *byte == b'\n').next()?;
-    let line = String::from_utf8_lossy(head);
-    let mut parts = line.split_whitespace();
-    let _version = parts.next()?;
-    let code = parts.next()?;
-    code.parse::<u16>().ok()
 }
 
 fn is_retryable_status(status_code: u16) -> bool {
@@ -966,6 +1089,274 @@ mod tests {
                 assert!(message.contains("timed out"));
             }
             other => panic!("expected upstream timeout error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_upstream_response_with_invalid_status_line() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let _request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                .await
+                .expect("read backend request");
+            stream
+                .write_all(b"HTTP/1.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("write invalid upstream response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /bad-upstream HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task");
+        match outcome {
+            Err(ProxyConnectionError {
+                error: GatewayError::Protocol(message),
+                ..
+            }) => assert!(message.contains("status code")),
+            other => panic!("expected invalid upstream status line error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_upstream_response_with_too_many_headers() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let _request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                .await
+                .expect("read backend request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nX-One: 1\r\nX-Two: 2\r\nX-Three: 3\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write upstream response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                max_upstream_headers: 3,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /bad-upstream HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task");
+        match outcome {
+            Err(ProxyConnectionError {
+                error: GatewayError::Protocol(message),
+                ..
+            }) => assert!(message.contains("too many headers")),
+            other => panic!("expected too many upstream headers error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_upstream_response_body_larger_than_limit() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let _request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                .await
+                .expect("read backend request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+                )
+                .await
+                .expect("write upstream response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                max_upstream_body_bytes: 4,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /bad-upstream HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task");
+        match outcome {
+            Err(ProxyConnectionError {
+                error: GatewayError::Protocol(message),
+                ..
+            }) => assert!(message.contains("body exceeds")),
+            other => panic!("expected oversized upstream body error, got {:?}", other),
         }
     }
 

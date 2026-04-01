@@ -526,12 +526,14 @@ mod tests {
         let started_at = Instant::now();
         let server = tokio::spawn(async move {
             app.run_until(async {
-                sleep(Duration::from_millis(40)).await;
+                // 先给客户端建立在途连接的时间，再触发关闭流程。
+                sleep(Duration::from_millis(80)).await;
             })
             .await
         });
 
-        sleep(Duration::from_millis(10)).await;
+        // 这里短等片刻，让监听任务进入 accept 循环，但还不要晚到错过关闭前窗口。
+        sleep(Duration::from_millis(20)).await;
 
         let mut client = TcpStream::connect(("127.0.0.1", listener_port))
             .await

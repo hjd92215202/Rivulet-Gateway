@@ -255,6 +255,14 @@ pub struct RuntimeSettings {
     pub upstream_read_timeout: Duration,
     /// 单次请求允许的最大尝试次数，至少为 1。
     pub upstream_retry_attempts: usize,
+    /// 允许的最大上游状态行字节数。
+    pub max_upstream_status_line_bytes: usize,
+    /// 允许的最大上游响应头数量。
+    pub max_upstream_headers: usize,
+    /// 允许的最大上游响应头字节数。
+    pub max_upstream_header_bytes: usize,
+    /// 允许的最大上游响应体字节数。
+    pub max_upstream_body_bytes: usize,
     /// 允许的最大请求行字节数。
     pub max_request_line_bytes: usize,
     /// 允许的最大请求头数量。
@@ -272,6 +280,10 @@ impl Default for RuntimeSettings {
             upstream_connect_timeout: Duration::from_secs(3),
             upstream_read_timeout: Duration::from_secs(5),
             upstream_retry_attempts: 2,
+            max_upstream_status_line_bytes: 8 * 1024,
+            max_upstream_headers: 100,
+            max_upstream_header_bytes: 64 * 1024,
+            max_upstream_body_bytes: 8 * 1024 * 1024,
             max_request_line_bytes: 8 * 1024,
             max_request_headers: 100,
             max_request_body_bytes: 1024 * 1024,
@@ -316,6 +328,9 @@ mod tests {
     fn runtime_settings_default_retry_attempts_are_positive() {
         let settings = RuntimeSettings::default();
         assert!(settings.upstream_retry_attempts >= 1);
+        assert!(settings.max_upstream_status_line_bytes >= 256);
+        assert!(settings.max_upstream_headers >= 1);
+        assert!(settings.max_upstream_header_bytes >= 1024);
         assert!(settings.max_request_line_bytes >= 256);
         assert!(settings.max_request_headers >= 1);
     }

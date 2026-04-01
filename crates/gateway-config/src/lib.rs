@@ -122,6 +122,14 @@ impl GatewayConfigFile {
             upstream_read_timeout: Duration::from_millis(self.runtime.upstream_read_timeout_ms),
             // 至少保留一次尝试，避免 0 把主链路推成非法状态。
             upstream_retry_attempts: self.runtime.upstream_retry_attempts.max(1),
+            // 上游状态行长度至少保留一个基础下限，避免合法响应被错误配置一刀切掉。
+            max_upstream_status_line_bytes: self.runtime.max_upstream_status_line_bytes.max(256),
+            // 上游响应头数量至少允许 1 个，避免把基本响应也配置成无法通过。
+            max_upstream_headers: self.runtime.max_upstream_headers.max(1),
+            // 上游响应头字节数至少给一个可用下限，避免解析器直接失效。
+            max_upstream_header_bytes: self.runtime.max_upstream_header_bytes.max(1024),
+            // 上游响应体大小允许显式设成 0，表示只接受无 body 响应。
+            max_upstream_body_bytes: self.runtime.max_upstream_body_bytes,
             // 请求行长度至少保留一个基础可用下限，避免解析器被错误配置锁死。
             max_request_line_bytes: self.runtime.max_request_line_bytes.max(256),
             // 请求头数量至少允许 1 个，才能容纳 Host。
@@ -152,6 +160,18 @@ pub struct RuntimeConfig {
     /// 单次请求最多尝试几次 upstream。
     #[serde(default = "default_upstream_retry_attempts")]
     pub upstream_retry_attempts: usize,
+    /// 上游状态行允许的最大字节数。
+    #[serde(default = "default_max_upstream_status_line_bytes")]
+    pub max_upstream_status_line_bytes: usize,
+    /// 上游响应头允许的最大数量。
+    #[serde(default = "default_max_upstream_headers")]
+    pub max_upstream_headers: usize,
+    /// 上游响应头允许的最大总字节数。
+    #[serde(default = "default_max_upstream_header_bytes")]
+    pub max_upstream_header_bytes: usize,
+    /// 上游响应体允许的最大字节数。
+    #[serde(default = "default_max_upstream_body_bytes")]
+    pub max_upstream_body_bytes: usize,
     /// 请求行允许的最大字节数。
     #[serde(default = "default_max_request_line_bytes")]
     pub max_request_line_bytes: usize,
@@ -173,6 +193,10 @@ impl Default for RuntimeConfig {
             upstream_connect_timeout_ms: default_upstream_connect_timeout_ms(),
             upstream_read_timeout_ms: default_upstream_read_timeout_ms(),
             upstream_retry_attempts: default_upstream_retry_attempts(),
+            max_upstream_status_line_bytes: default_max_upstream_status_line_bytes(),
+            max_upstream_headers: default_max_upstream_headers(),
+            max_upstream_header_bytes: default_max_upstream_header_bytes(),
+            max_upstream_body_bytes: default_max_upstream_body_bytes(),
             max_request_line_bytes: default_max_request_line_bytes(),
             max_request_headers: default_max_request_headers(),
             max_request_body_bytes: default_max_request_body_bytes(),
@@ -401,6 +425,22 @@ fn default_upstream_retry_attempts() -> usize {
     2
 }
 
+fn default_max_upstream_status_line_bytes() -> usize {
+    8 * 1024
+}
+
+fn default_max_upstream_headers() -> usize {
+    100
+}
+
+fn default_max_upstream_header_bytes() -> usize {
+    64 * 1024
+}
+
+fn default_max_upstream_body_bytes() -> usize {
+    8 * 1024 * 1024
+}
+
 fn default_max_request_line_bytes() -> usize {
     8 * 1024
 }
@@ -576,6 +616,10 @@ upstream = "api"
 
         assert_eq!(loaded.runtime.worker_threads, 4);
         assert_eq!(loaded.runtime.upstream_retry_attempts, 2);
+        assert_eq!(loaded.runtime.max_upstream_status_line_bytes, 8 * 1024);
+        assert_eq!(loaded.runtime.max_upstream_headers, 100);
+        assert_eq!(loaded.runtime.max_upstream_header_bytes, 64 * 1024);
+        assert_eq!(loaded.runtime.max_upstream_body_bytes, 8 * 1024 * 1024);
         assert_eq!(loaded.runtime.max_request_line_bytes, 8 * 1024);
         assert_eq!(loaded.runtime.max_request_headers, 100);
         assert_eq!(loaded.runtime.max_request_body_bytes, 1024 * 1024);
