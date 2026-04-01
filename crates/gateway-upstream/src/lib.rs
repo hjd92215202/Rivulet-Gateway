@@ -9,6 +9,7 @@ use std::time::Duration;
 use gateway_config::{GatewayConfigFile, HealthCheckConfig, LoadBalanceConfig};
 use gateway_types::{GatewayError, ProxyPolicyOverrides, Result, UpstreamEndpoint};
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 #[derive(Clone, Debug)]
@@ -159,6 +160,7 @@ pub struct EndpointState {
     consecutive_successes: AtomicU32,
     /// 连续失败计数。
     consecutive_failures: AtomicU32,
+    idle_connections: Mutex<Vec<TcpStream>>,
 }
 
 impl EndpointState {
@@ -169,6 +171,7 @@ impl EndpointState {
             healthy: AtomicBool::new(true),
             consecutive_successes: AtomicU32::new(0),
             consecutive_failures: AtomicU32::new(0),
+            idle_connections: Mutex::new(Vec::new()),
         }
     }
 
@@ -183,6 +186,21 @@ impl EndpointState {
     }
 
     /// 成功会清空失败计数，并在达到阈值后把节点恢复成健康状态。
+    pub async fn checkout_idle_connection(&self) -> Option<TcpStream> {
+        self.idle_connections.lock().await.pop()
+    }
+
+    pub async fn store_idle_connection(&self, stream: TcpStream, max_idle: usize) {
+        if max_idle == 0 {
+            return;
+        }
+        let mut idle_connections = self.idle_connections.lock().await;
+        if idle_connections.len() >= max_idle {
+            return;
+        }
+        idle_connections.push(stream);
+    }
+
     pub fn record_success(&self, healthy_threshold: u32) {
         // 一次成功会清空失败计数，代表节点开始恢复。
         self.consecutive_failures.store(0, Ordering::Relaxed);

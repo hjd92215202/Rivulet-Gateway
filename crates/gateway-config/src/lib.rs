@@ -122,6 +122,7 @@ impl GatewayConfigFile {
             upstream_read_timeout: Duration::from_millis(self.runtime.upstream_read_timeout_ms),
             // 至少保留一次尝试，避免 0 把主链路推成非法状态。
             upstream_retry_attempts: self.runtime.upstream_retry_attempts.max(1),
+            upstream_idle_pool_size: self.runtime.upstream_idle_pool_size,
             // 上游状态行长度至少保留一个基础下限，避免合法响应被错误配置一刀切掉。
             max_upstream_status_line_bytes: self.runtime.max_upstream_status_line_bytes.max(256),
             // 上游响应头数量至少允许 1 个，避免把基本响应也配置成无法通过。
@@ -160,6 +161,8 @@ pub struct RuntimeConfig {
     /// 单次请求最多尝试几次 upstream。
     #[serde(default = "default_upstream_retry_attempts")]
     pub upstream_retry_attempts: usize,
+    #[serde(default = "default_upstream_idle_pool_size")]
+    pub upstream_idle_pool_size: usize,
     /// 上游状态行允许的最大字节数。
     #[serde(default = "default_max_upstream_status_line_bytes")]
     pub max_upstream_status_line_bytes: usize,
@@ -193,6 +196,7 @@ impl Default for RuntimeConfig {
             upstream_connect_timeout_ms: default_upstream_connect_timeout_ms(),
             upstream_read_timeout_ms: default_upstream_read_timeout_ms(),
             upstream_retry_attempts: default_upstream_retry_attempts(),
+            upstream_idle_pool_size: default_upstream_idle_pool_size(),
             max_upstream_status_line_bytes: default_max_upstream_status_line_bytes(),
             max_upstream_headers: default_max_upstream_headers(),
             max_upstream_header_bytes: default_max_upstream_header_bytes(),
@@ -425,6 +429,10 @@ fn default_upstream_retry_attempts() -> usize {
     2
 }
 
+fn default_upstream_idle_pool_size() -> usize {
+    1
+}
+
 fn default_max_upstream_status_line_bytes() -> usize {
     8 * 1024
 }
@@ -616,6 +624,7 @@ upstream = "api"
 
         assert_eq!(loaded.runtime.worker_threads, 4);
         assert_eq!(loaded.runtime.upstream_retry_attempts, 2);
+        assert_eq!(loaded.runtime.upstream_idle_pool_size, 1);
         assert_eq!(loaded.runtime.max_upstream_status_line_bytes, 8 * 1024);
         assert_eq!(loaded.runtime.max_upstream_headers, 100);
         assert_eq!(loaded.runtime.max_upstream_header_bytes, 64 * 1024);

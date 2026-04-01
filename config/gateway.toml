@@ -5,6 +5,7 @@ downstream_read_timeout_ms = 5000
 upstream_connect_timeout_ms = 3000
 upstream_read_timeout_ms = 5000
 upstream_retry_attempts = 2
+upstream_idle_pool_size = 1
 max_upstream_status_line_bytes = 8192
 max_upstream_headers = 100
 max_upstream_header_bytes = 65536

@@ -139,7 +139,8 @@ impl ProxyService {
                 retries: 0,
             })?;
         // 记录这次请求已经尝试失败过的地址，避免重试回到同一个坏节点。
-        // 杩欓噷鏄湰娆¤姹傜湡姝ｇ敓鏁堢殑杞彂绛栫暐锛?        // 浼樺厛绾у浐瀹氫负 route override -> upstream override -> runtime default銆?
+        // 这里是本次请求真正生效的转发策略，
+        // 优先级固定为 route override -> upstream override -> runtime default。
         let policy = route.proxy_policy.or_else(cluster.proxy_policy()).resolve(&self.timeouts);
         let mut excluded_addresses = Vec::new();
         // 所有尝试都失败时，最终会从这里返回最后一个可解释错误。
@@ -255,34 +256,84 @@ impl ProxyService {
         endpoint_state: &EndpointState,
         request: &HttpRequest,
         request_context: &RequestContext,
-        // 杩欓噷浼犲叆鐨勫凡缁忔槸鏈€缁堢‘瀹氬ソ鐨勭瓥鐣ワ紝
-        // 鎵€浠ヤ笌鍗曚釜 upstream 鐨勪氦浜掕繃绋嬩笉鐢ㄥ啀鍏虫敞绛栫暐浼樺厛绾ч棶棰樸€?
+        // 这里传入的已经是最终确定好的策略，
+        // 所以与单个 upstream 的交互过程不用再关心策略优先级问题。
         policy: ResolvedProxyPolicy,
     ) -> Result<UpstreamResponse> {
         // 这里把“与单个 upstream 交互”收口成独立函数，
         // 方便后面接入更细的错误分类、重试预算和连接池。
         let endpoint = endpoint_state.endpoint();
+        let keepalive_enabled = self.timeouts.upstream_idle_pool_size > 0;
+        let mut force_fresh_connect = false;
+
+        loop {
+            // 先尝试借用空闲连接；只有池里没有可用连接时才真正发起新建连。
+            let (mut upstream, reused_idle_connection) = if !force_fresh_connect {
+                match endpoint_state.checkout_idle_connection().await {
+                    Some(stream) => (stream, true),
+                    None => (self.connect_upstream(endpoint.address.as_str(), policy).await?, false),
+                }
+            } else {
+                (
+                    self.connect_upstream(endpoint.address.as_str(), policy).await?,
+                    false,
+                )
+            };
+
+            // 空闲连接有可能已经被上游静默关掉；第一版先允许在同一次 endpoint 尝试里补一次新建连。
+            if let Err(error) = request
+                .write_to_upstream(&mut upstream, request_context, keepalive_enabled)
+                .await
+            {
+                if reused_idle_connection {
+                    force_fresh_connect = true;
+                    continue;
+                }
+                return Err(error);
+            }
+
+            let response =
+                read_upstream_response(&mut upstream, policy, &self.timeouts, request_context.method)
+                    .await;
+            match response {
+                Ok(response) => {
+                    // 只有边界明确且上游允许 keep-alive 的连接才回收，避免把脏连接放回池里。
+                    if response.reusable_connection {
+                        endpoint_state
+                            .store_idle_connection(upstream, self.timeouts.upstream_idle_pool_size)
+                            .await;
+                    }
+                    return Ok(response);
+                }
+                Err(error) => {
+                    if reused_idle_connection {
+                        force_fresh_connect = true;
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    async fn connect_upstream(
+        &self,
+        endpoint_address: &str,
+        policy: ResolvedProxyPolicy,
+    ) -> Result<TcpStream> {
         // 建连阶段受 connect timeout 保护，避免坏节点无限拖住请求。
-        let mut upstream = timeout(
+        timeout(
             policy.upstream_connect_timeout,
-            TcpStream::connect(&endpoint.address),
+            TcpStream::connect(endpoint_address),
         )
         .await
         .map_err(|_| {
             GatewayError::Io(format!(
                 "connect upstream {} timed out after {:?}",
-                endpoint.address, policy.upstream_connect_timeout
+                endpoint_address, policy.upstream_connect_timeout
             ))
         })?
-        .map_err(|err| {
-            GatewayError::Io(format!("connect upstream {}: {}", endpoint.address, err))
-        })?;
-
-        request
-            .write_to_upstream(&mut upstream, request_context)
-            .await?;
-
-        read_upstream_response(&mut upstream, policy, &self.timeouts).await
+        .map_err(|err| GatewayError::Io(format!("connect upstream {}: {}", endpoint_address, err)))
     }
 }
 
@@ -292,12 +343,27 @@ struct UpstreamResponse {
     bytes: Vec<u8>,
     /// 已经校验过的上游状态码，供重试策略直接使用。
     status_code: u16,
+    /// 只有响应边界明确且上游未声明关闭时，连接才允许回收到池里。
+    reusable_connection: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ValidatedUpstreamResponseHead {
+    /// 状态码会继续参与重试判定和日志记录。
+    status_code: u16,
+    /// 如果上游给出了精确的 `Content-Length`，这里就记录解析结果。
+    content_length: Option<usize>,
+    /// 某些响应按协议语义本身就不允许携带 body，例如 `HEAD`、`204`、`304`。
+    body_allowed: bool,
+    /// 只有在上游没有声明关闭连接时，连接才有资格进入复用判定。
+    reusable_connection: bool,
 }
 
 async fn read_upstream_response(
     upstream: &mut TcpStream,
     policy: ResolvedProxyPolicy,
     settings: &RuntimeSettings,
+    request_method: HttpMethod,
 ) -> Result<UpstreamResponse> {
     let mut buffer = Vec::with_capacity(4096);
     let mut temp = [0_u8; 2048];
@@ -329,52 +395,104 @@ async fn read_upstream_response(
         buffer.extend_from_slice(&temp[..read]);
     };
 
-    let status_code = validate_upstream_response_head(&buffer[..header_end], settings)?;
+    // 头部一旦读完整，就立刻把状态行、连接语义和 body 边界规则算出来。
+    // 后续 body 读取严格按这里的结论执行，避免“读多了”或“读少了”。
+    let response_head =
+        validate_upstream_response_head(&buffer[..header_end], settings, request_method)?;
 
     // 头部之后已经落入缓冲区的剩余字节就属于响应体，需要立刻做一次限额检查。
-    let mut body_bytes = buffer.len().saturating_sub(header_end + 4);
-    if body_bytes > settings.max_upstream_body_bytes {
-        return Err(GatewayError::Protocol(
-            "upstream response body exceeds configured maximum size".into(),
-        ));
-    }
+    let body_start = header_end + 4;
+    let mut body_bytes = buffer.len().saturating_sub(body_start);
 
-    // 头部合法后继续把剩余 body 读完，但依旧受总大小约束保护。
-    loop {
-        let read = timeout(policy.upstream_read_timeout, upstream.read(&mut temp))
-            .await
-            .map_err(|_| {
-                GatewayError::Io(format!(
-                    "read upstream response timed out after {:?}",
-                    policy.upstream_read_timeout
-                ))
-            })?
-            .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
-        if read == 0 {
-            break;
+    // 如果响应按协议不允许带 body，那头部后面出现任何多余字节都说明上游越界了。
+    if !response_head.body_allowed {
+        if body_bytes != 0 {
+            return Err(GatewayError::Protocol(
+                "upstream returned a body for a response that must not contain one".into(),
+            ));
         }
-        body_bytes += read;
+    } else if let Some(content_length) = response_head.content_length {
+        // 有精确长度时，先检查已读到缓冲区里的字节是否已经越界。
+        if content_length > settings.max_upstream_body_bytes {
+            return Err(GatewayError::Protocol(
+                "upstream response body exceeds configured maximum size".into(),
+            ));
+        }
+        if body_bytes > content_length {
+            return Err(GatewayError::Protocol(
+                "upstream response body exceeds declared content-length".into(),
+            ));
+        }
+
+        // 再把剩余的固定长度 body 读满，确保连接边界被完整消费。
+        while body_bytes < content_length {
+            let read = timeout(policy.upstream_read_timeout, upstream.read(&mut temp))
+                .await
+                .map_err(|_| {
+                    GatewayError::Io(format!(
+                        "read upstream response timed out after {:?}",
+                        policy.upstream_read_timeout
+                    ))
+                })?
+                .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
+            if read == 0 {
+                return Err(GatewayError::Protocol(
+                    "upstream closed connection before response body completed".into(),
+                ));
+            }
+            body_bytes += read;
+            if body_bytes > content_length {
+                return Err(GatewayError::Protocol(
+                    "upstream response body exceeds declared content-length".into(),
+                ));
+            }
+            buffer.extend_from_slice(&temp[..read]);
+        }
+    } else {
+        // 没有精确长度但按协议允许 body 时，只能退回到 EOF 作为结束边界。
+        // 这种模式能保证功能正确，但由于边界依赖对端关连接，所以绝不复用。
         if body_bytes > settings.max_upstream_body_bytes {
             return Err(GatewayError::Protocol(
                 "upstream response body exceeds configured maximum size".into(),
             ));
         }
-        buffer.extend_from_slice(&temp[..read]);
+        loop {
+            let read = timeout(policy.upstream_read_timeout, upstream.read(&mut temp))
+                .await
+                .map_err(|_| {
+                    GatewayError::Io(format!(
+                        "read upstream response timed out after {:?}",
+                        policy.upstream_read_timeout
+                    ))
+                })?
+                .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
+            if read == 0 {
+                break;
+            }
+            body_bytes += read;
+            if body_bytes > settings.max_upstream_body_bytes {
+                return Err(GatewayError::Protocol(
+                    "upstream response body exceeds configured maximum size".into(),
+                ));
+            }
+            buffer.extend_from_slice(&temp[..read]);
+        }
     }
 
-    // 到这里说明状态行、头部和 body 都已经通过边界校验。
-    if buffer.is_empty() {
-        return Err(GatewayError::Protocol(
-            "upstream returned an empty response".into(),
-        ));
-    }
     Ok(UpstreamResponse {
         bytes: buffer,
-        status_code,
+        status_code: response_head.status_code,
+        // 只有“边界明确且上游未要求关闭”时才允许池化。
+        reusable_connection: response_head.reusable_connection
+            && (response_head.content_length.is_some() || !response_head.body_allowed),
     })
 }
 
-fn validate_upstream_response_head(head_bytes: &[u8], settings: &RuntimeSettings) -> Result<u16> {
+fn validate_upstream_response_head(
+    head_bytes: &[u8],
+    settings: &RuntimeSettings,
+    request_method: HttpMethod,
+) -> Result<ValidatedUpstreamResponseHead> {
     let head = String::from_utf8(head_bytes.to_vec())
         .map_err(|_| GatewayError::Protocol("upstream response head is not valid utf-8".into()))?;
     let mut lines = head.split("\r\n");
@@ -413,6 +531,7 @@ fn validate_upstream_response_head(head_bytes: &[u8], settings: &RuntimeSettings
         ));
     }
 
+    let mut headers = Vec::new();
     let mut header_count = 0;
     for line in lines {
         if line.is_empty() {
@@ -424,7 +543,7 @@ fn validate_upstream_response_head(head_bytes: &[u8], settings: &RuntimeSettings
                 "upstream response contains too many headers".into(),
             ));
         }
-        let (name, _value) = line.split_once(':').ok_or_else(|| {
+        let (name, value) = line.split_once(':').ok_or_else(|| {
             GatewayError::Protocol(format!("invalid upstream header line {}", line))
         })?;
         let name = name.trim();
@@ -434,9 +553,25 @@ fn validate_upstream_response_head(head_bytes: &[u8], settings: &RuntimeSettings
                 name
             )));
         }
+        headers.push((name.to_string(), value.trim().to_string()));
     }
 
-    Ok(status_code)
+    // 第一版显式拒绝 `Transfer-Encoding`，避免在尚未实现 chunked 解码前误读边界。
+    if header_has_transfer_encoding(&headers) {
+        return Err(GatewayError::Unsupported(
+            "upstream transfer-encoding is not supported in the first kernel cut".into(),
+        ));
+    }
+
+    let content_length = parse_optional_content_length(&headers)?;
+    let connection_close = response_connection_close(version, &headers);
+
+    Ok(ValidatedUpstreamResponseHead {
+        status_code,
+        content_length,
+        body_allowed: upstream_response_body_allowed(status_code, request_method),
+        reusable_connection: !connection_close,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -617,6 +752,7 @@ impl HttpRequest {
         &self,
         upstream: &mut TcpStream,
         request_context: &RequestContext,
+        keepalive_enabled: bool,
     ) -> Result<()> {
         // 转发时会清理 hop-by-hop 头，并补齐代理侧需要的最小公共头。
         let mut request_bytes = Vec::with_capacity(1024 + self.body.len());
@@ -660,7 +796,12 @@ impl HttpRequest {
             }
         }
 
-        request_bytes.extend_from_slice(b"Connection: close\r\n");
+        // 只有启用了空闲连接池时才主动声明 keep-alive；否则继续用 close 收紧语义边界。
+        if keepalive_enabled {
+            request_bytes.extend_from_slice(b"Connection: keep-alive\r\n");
+        } else {
+            request_bytes.extend_from_slice(b"Connection: close\r\n");
+        }
         if !has_content_length {
             request_bytes
                 .extend_from_slice(format!("Content-Length: {}\r\n", self.body.len()).as_bytes());
@@ -707,6 +848,33 @@ fn parse_content_length(headers: &[(String, String)]) -> Result<usize> {
     Ok(content_length.unwrap_or(0))
 }
 
+fn parse_optional_content_length(headers: &[(String, String)]) -> Result<Option<usize>> {
+    let mut content_length = None;
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("content-length") {
+            let parsed = value.parse::<usize>().map_err(|_| {
+                GatewayError::Protocol(format!("invalid content-length header value {}", value))
+            })?;
+            match content_length {
+                // 响应方向同样从严禁止重复或冲突的 `Content-Length`，
+                // 否则连接复用时会把边界安全建立在不可靠前提上。
+                Some(existing) if existing != parsed => {
+                    return Err(GatewayError::Protocol(
+                        "conflicting upstream content-length headers are not allowed".into(),
+                    ));
+                }
+                Some(_) => {
+                    return Err(GatewayError::Protocol(
+                        "duplicate upstream content-length headers are not allowed".into(),
+                    ));
+                }
+                None => content_length = Some(parsed),
+            }
+        }
+    }
+    Ok(content_length)
+}
+
 fn validate_host_header(headers: &[(String, String)]) -> Result<()> {
     let host_values: Vec<_> = headers
         .iter()
@@ -737,6 +905,35 @@ fn header_has_transfer_encoding(headers: &[(String, String)]) -> bool {
     headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
+}
+
+fn response_connection_close(version: &str, headers: &[(String, String)]) -> bool {
+    if version == "HTTP/1.0" {
+        // HTTP/1.0 默认是短连接，只有显式 `keep-alive` 才把它当成可持久连接。
+        !headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("connection")
+                && value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("keep-alive"))
+        })
+    } else {
+        // HTTP/1.1 默认允许持久连接，只有显式 `close` 才强制本次连接不可复用。
+        headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("connection")
+                && value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("close"))
+        })
+    }
+}
+
+fn upstream_response_body_allowed(status_code: u16, request_method: HttpMethod) -> bool {
+    // `HEAD` 响应、1xx、204、304 都没有语义 body；
+    // 只要碰到这些状态，我们就按“无 body”边界处理响应。
+    request_method != HttpMethod::Head
+        && !(100..200).contains(&status_code)
+        && status_code != 204
+        && status_code != 304
 }
 
 fn is_valid_header_name(name: &str) -> bool {
@@ -803,12 +1000,15 @@ fn status_and_reason_for_error(error: &GatewayError) -> (u16, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use gateway_config::{
         EndpointConfig, GatewayConfigFile, ListenerConfig, LoadBalanceConfig, ProtocolConfig,
         ProxyPolicyConfig, RouteConfig, RuntimeConfig, UpstreamConfig,
     };
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{Duration, sleep, timeout};
 
     #[tokio::test]
     async fn proxies_http_request_to_upstream() {
@@ -929,7 +1129,7 @@ mod tests {
             let text = String::from_utf8(raw).expect("request utf-8");
             assert!(text.contains("X-Forwarded-For: 127.0.0.1"));
             assert!(text.contains("Host: example.test"));
-            assert!(!text.contains("Connection: keep-alive"));
+            assert!(text.contains("Connection: keep-alive"));
             assert!(!text.contains("Proxy-Connection"));
 
             stream
@@ -1007,6 +1207,174 @@ mod tests {
 
         let text = String::from_utf8(response).expect("utf-8 response");
         assert!(text.starts_with("HTTP/1.1 200 OK"));
+    }
+
+    #[tokio::test]
+    async fn reuses_upstream_connection_when_response_has_content_length() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let backend_accept_count = Arc::clone(&accept_count);
+
+        let backend_task = tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            backend_accept_count.fetch_add(1, Ordering::SeqCst);
+
+            // 第一条请求读完后不关连接，验证网关会把它放回池里供下一次复用。
+            let first_request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                .await
+                .expect("read first backend request");
+            assert_eq!(first_request.path_for_route(), "/one");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: keep-alive\r\n\r\none",
+                )
+                .await
+                .expect("write first backend response");
+
+            // 第二条请求如果还能从同一条 TCP 流里读出来，就说明连接复用已经生效。
+            let second_request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                .await
+                .expect("read second backend request");
+            assert_eq!(second_request.path_for_route(), "/two");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: keep-alive\r\n\r\ntwo",
+                )
+                .await
+                .expect("write second backend response");
+
+            // 两次请求都处理完后，再短暂观察监听口；如果还有第二次 accept，就说明网关偷偷新建了连接。
+            let unexpected_accept = timeout(Duration::from_millis(200), backend.accept()).await;
+            assert!(unexpected_accept.is_err());
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+                service
+                    .handle_connection("edge", &mut downstream, client_addr)
+                    .await
+                    .expect("proxy request");
+            }
+        });
+
+        let mut first_client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect first gateway");
+        first_client
+            .write_all(b"GET /one HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write first request");
+        let mut first_response = Vec::new();
+        first_client
+            .read_to_end(&mut first_response)
+            .await
+            .expect("read first response");
+
+        let mut second_client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect second gateway");
+        second_client
+            .write_all(b"GET /two HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write second request");
+        let mut second_response = Vec::new();
+        second_client
+            .read_to_end(&mut second_response)
+            .await
+            .expect("read second response");
+
+        server.await.expect("gateway task");
+        backend_task.await.expect("backend task");
+
+        assert_eq!(accept_count.load(Ordering::SeqCst), 1);
+        assert!(String::from_utf8(first_response)
+            .expect("first response utf-8")
+            .ends_with("one"));
+        assert!(String::from_utf8(second_response)
+            .expect("second response utf-8")
+            .ends_with("two"));
+    }
+
+    #[tokio::test]
+    async fn eof_delimited_upstream_response_is_not_marked_reusable() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        let backend_task = tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nhello")
+                .await
+                .expect("write backend response");
+        });
+
+        let mut upstream = TcpStream::connect(backend_addr)
+            .await
+            .expect("connect backend");
+        let settings = RuntimeSettings::default();
+        let response = read_upstream_response(
+            &mut upstream,
+            settings.proxy_policy(),
+            &settings,
+            HttpMethod::Get,
+        )
+        .await
+        .expect("read upstream response");
+
+        backend_task.await.expect("backend task");
+
+        assert_eq!(response.status_code, 200);
+        assert!(!response.reusable_connection);
+        assert!(String::from_utf8(response.bytes)
+            .expect("response utf-8")
+            .ends_with("hello"));
     }
 
     #[tokio::test]
