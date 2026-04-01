@@ -1,3 +1,6 @@
+//! 配置层负责把外部文本配置收敛成强类型结构。
+//! 第一阶段暂时只支持 TOML，并且在加载时尽量把明显错误提前暴露出来。
+
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -18,6 +21,8 @@ pub struct GatewayConfigFile {
 }
 
 impl GatewayConfigFile {
+    /// 从磁盘加载配置并立即做结构校验。
+    /// 这样启动阶段失败得更早，避免把配置问题拖到请求路径里。
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let raw = fs::read_to_string(path)
@@ -29,6 +34,8 @@ impl GatewayConfigFile {
     }
 
     pub fn validate(&self) -> Result<()> {
+        // 第一阶段先做“引用完整性”和“最小字段存在性”校验。
+        // 更细的语义校验会随着控制面增强逐步补上。
         if self.listeners.is_empty() {
             return Err(GatewayError::InvalidConfig(
                 "at least one listener is required".into(),
@@ -86,6 +93,8 @@ impl GatewayConfigFile {
     }
 
     pub fn runtime_settings(&self) -> RuntimeSettings {
+        // 这里把外部配置转成运行时快照，并顺手做最小兜底，
+        // 避免 0 次重试这类配置把代理主链路直接推入非法状态。
         RuntimeSettings {
             worker_threads: self.runtime.worker_threads,
             graceful_shutdown: Duration::from_secs(self.runtime.graceful_shutdown_secs),
@@ -135,6 +144,8 @@ pub struct ListenerConfig {
     pub protocol: ProtocolConfig,
 }
 
+/// 协议枚举和 `gateway-types::Protocol` 分开定义，
+/// 让配置层可以独立处理反序列化细节。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProtocolConfig {
@@ -166,6 +177,8 @@ pub struct RouteConfig {
     pub filters: Vec<String>,
 }
 
+/// 路由上的方法限制默认是“空列表表示不限制”，
+/// 这样配置写起来更接近常见网关产品的使用方式。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 pub enum HttpMethodConfig {
     GET,
@@ -201,6 +214,7 @@ pub struct UpstreamConfig {
     pub endpoints: Vec<EndpointConfig>,
 }
 
+/// 主动健康检查先从 TCP 探活开始，先解决“坏节点摘除”的核心问题。
 #[derive(Clone, Debug, Deserialize)]
 pub struct HealthCheckConfig {
     #[serde(default = "default_health_check_interval_ms")]

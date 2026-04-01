@@ -1,3 +1,6 @@
+//! runtime 层负责把配置、代理和后台任务真正装配起来。
+//! 它不关心某次请求具体怎么转发，只关心“系统如何活起来并稳定运行”。
+
 use std::sync::Arc;
 
 use gateway_config::GatewayConfigFile;
@@ -50,6 +53,8 @@ impl GatewayApp {
     where
         F: std::future::Future<Output = ()> + Send,
     {
+        // runtime 会同时托管 listener 和后台健康检查任务，
+        // 统一由一个 shutdown 信号驱动退出。
         let shared = Arc::new(self);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut handles = Vec::new();
@@ -126,6 +131,8 @@ async fn listener_loop(
                 let app = Arc::clone(&app);
                 let listener_name = listener_name.clone();
                 tokio::spawn(async move {
+                    // 单个连接失败不应该把整个 listener 打崩，
+                    // 所以这里把错误就地转换成 HTTP 响应返回给客户端。
                     if let Err(error) = app.proxy.handle_connection(&listener_name, &mut stream, client_addr).await {
                         let response = gateway_proxy::error_response(&error);
                         let _ = stream.write_all(&response).await;
@@ -158,6 +165,7 @@ async fn health_check_loop(
                 }
             }
             _ = ticker.tick() => {
+                // 健康检查目前串行执行，先用更简单、可预测的行为换取可维护性。
                 for endpoint in cluster.endpoints() {
                     let _ = probe_endpoint(endpoint.as_ref(), &config).await;
                 }

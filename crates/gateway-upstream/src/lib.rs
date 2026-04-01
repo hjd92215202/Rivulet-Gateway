@@ -1,3 +1,6 @@
+//! upstream 层负责管理后端节点集合和它们的健康状态。
+//! 这里的目标不是做复杂调度，而是先把“选谁”和“谁健康”这两件事稳住。
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -59,6 +62,7 @@ impl UpstreamRegistry {
     }
 }
 
+/// 集群内部只维护节点选择与健康状态，不直接掺杂连接池等更重的职责。
 #[derive(Debug)]
 pub struct UpstreamCluster {
     pub name: String,
@@ -73,6 +77,7 @@ impl UpstreamCluster {
         Ok(self.select_endpoint(&[])?.endpoint().clone())
     }
 
+    /// 重试时会传入已经失败过的地址列表，尽量避免同一次请求反复撞同一个坏节点。
     pub fn select_endpoint(&self, excluded_addresses: &[String]) -> Result<Arc<EndpointState>> {
         let healthy: Vec<_> = self
             .endpoints
@@ -117,6 +122,8 @@ impl UpstreamCluster {
     }
 }
 
+/// `EndpointState` 是主动健康检查和被动失败感知共享的状态容器。
+/// 这里用原子计数即可满足当前读多写少的场景，不急着引入更复杂的并发结构。
 #[derive(Debug)]
 pub struct EndpointState {
     endpoint: UpstreamEndpoint,
@@ -143,6 +150,7 @@ impl EndpointState {
         self.healthy.load(Ordering::Relaxed)
     }
 
+    /// 成功会清空失败计数，并在达到阈值后把节点恢复成健康状态。
     pub fn record_success(&self, healthy_threshold: u32) {
         self.consecutive_failures.store(0, Ordering::Relaxed);
         let successes = self.consecutive_successes.fetch_add(1, Ordering::Relaxed) + 1;
@@ -151,6 +159,7 @@ impl EndpointState {
         }
     }
 
+    /// 失败会清空成功计数，并在达到阈值后摘除节点。
     pub fn record_failure(&self, unhealthy_threshold: u32) {
         self.consecutive_successes.store(0, Ordering::Relaxed);
         let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
@@ -160,6 +169,8 @@ impl EndpointState {
     }
 }
 
+/// 第一阶段的主动探活先做 TCP connect，
+/// 它不够精细，但能以很低复杂度覆盖“端口是否可连”这个核心问题。
 pub async fn probe_endpoint(endpoint: &EndpointState, config: &HealthCheckConfig) -> bool {
     let result = timeout(
         Duration::from_millis(config.timeout_ms),

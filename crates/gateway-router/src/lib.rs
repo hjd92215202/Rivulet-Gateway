@@ -1,3 +1,6 @@
+//! 路由层只负责“这次请求该走哪条规则”，不负责真正的转发。
+//! 这样后续即便代理策略变复杂，路由匹配逻辑也能保持稳定。
+
 use gateway_config::{GatewayConfigFile, RouteConfig};
 use gateway_types::{GatewayError, HttpMethod, RequestContext, Result, RouteMatch};
 
@@ -13,6 +16,8 @@ impl Router {
         }
     }
 
+    /// 第一阶段采用“按配置顺序取首个匹配”的简单策略。
+    /// 这让行为足够直观，也给后面引入显式优先级留了空间。
     pub fn resolve(&self, request: &RequestContext) -> Result<RouteMatch> {
         let route = self
             .routes
@@ -35,6 +40,7 @@ fn route_matches(route: &RouteConfig, request: &RequestContext) -> bool {
         && method_matches(route, request.method)
 }
 
+/// listener 维度的隔离很关键，它决定了同一路径能否在不同入口上复用不同策略。
 fn listener_matches(route: &RouteConfig, request: &RequestContext) -> bool {
     route.listener == request.listener
 }
@@ -44,6 +50,7 @@ fn host_matches(route: &RouteConfig, request: &RequestContext) -> bool {
 }
 
 fn path_matches(route: &RouteConfig, request: &RequestContext) -> bool {
+    // 目前先使用前缀匹配，足够支撑最常见的网关路径路由。
     route.path_prefixes.is_empty()
         || route
             .path_prefixes

@@ -1,3 +1,6 @@
+//! 二进制入口只负责装配和生命周期管理。
+//! 业务能力尽量收敛到各个 crate 中，避免 main 变成难维护的“大杂烩”。
+
 use std::env;
 use std::path::PathBuf;
 
@@ -38,6 +41,7 @@ fn config_path() -> PathBuf {
 }
 
 async fn wait_for_shutdown() {
+    // 第一版先用 ctrl-c 作为统一停止信号，后面再扩展成更完整的优雅下线流程。
     match tokio::signal::ctrl_c().await {
         Ok(()) => {}
         Err(error) => {

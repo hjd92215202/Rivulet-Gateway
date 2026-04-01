@@ -1,3 +1,6 @@
+//! 过滤器层是后续扩展能力的主入口。
+//! 第一阶段先把接口定稳，具体能力只保留最小集合。
+
 use std::future::Future;
 use std::pin::Pin;
 
@@ -5,6 +8,7 @@ use gateway_types::{RequestContext, ResponseContext, Result};
 
 pub type FilterFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 
+/// 过滤器分成请求前和响应后两个阶段，便于后面串接鉴权、限流和日志等能力。
 pub trait HttpFilter: Send + Sync {
     fn name(&self) -> &'static str;
 
@@ -27,6 +31,8 @@ impl HttpFilter for RequestIdFilter {
 
     fn before<'a>(&'a self, request: &'a mut RequestContext) -> FilterFuture<'a> {
         Box::pin(async move {
+            // 第一阶段先用稳定可读的字符串拼一个 request id，
+            // 方便测试和排障；后面再替换成真正的随机或雪花算法。
             if request.request_id.is_none() {
                 request.request_id = Some(format!(
                     "{}:{}:{}",
@@ -52,6 +58,8 @@ pub struct FilterRegistry {
 }
 
 impl FilterRegistry {
+    /// 默认注册表只放核心过滤器。
+    /// 未知过滤器当前会被忽略，后面再根据控制面需求决定是否改成严格失败。
     pub fn with_defaults() -> Self {
         Self {
             filters: vec![Box::new(RequestIdFilter), Box::new(AccessLogFilter)],

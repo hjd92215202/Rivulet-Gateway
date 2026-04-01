@@ -1,3 +1,6 @@
+//! proxy 层负责把“路由结果”真正变成一次转发行为。
+//! 第一阶段只支持保守的 HTTP/1.1 代理语义，重点是把边界条件和错误路径做扎实。
+
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -60,6 +63,8 @@ impl ProxyService {
         downstream: &mut TcpStream,
         client_addr: SocketAddr,
     ) -> Result<()> {
+        // 这条链路是“真实网络请求”的主路径：
+        // 读请求 -> 路由 -> 过滤器 -> 选上游 -> 转发 -> 回写响应。
         let request =
             HttpRequest::read_from(downstream, self.timeouts.downstream_read_timeout).await?;
         let mut request_context = RequestContext::new(
@@ -94,6 +99,7 @@ impl ProxyService {
             match outcome {
                 Ok(upstream_bytes) => {
                     let status_code = parse_status_code(&upstream_bytes).unwrap_or(200);
+                    // 第一阶段只对少数典型 5xx 做重试，先避免把非幂等请求重试面铺得太大。
                     if is_retryable_status(status_code)
                         && attempt + 1 < self.timeouts.upstream_retry_attempts
                     {
@@ -142,6 +148,8 @@ impl ProxyService {
         request: &HttpRequest,
         request_context: &RequestContext,
     ) -> Result<Vec<u8>> {
+        // 这里把“与单个 upstream 交互”收口成独立函数，
+        // 方便后面接入更细的错误分类、重试预算和连接池。
         let endpoint = endpoint_state.endpoint();
         let mut upstream = timeout(
             self.timeouts.upstream_connect_timeout,
@@ -227,6 +235,8 @@ impl HttpRequest {
             buffer.extend_from_slice(&temp[..read]);
         };
 
+        // 请求头目前按可见 ASCII/UTF-8 文本处理。
+        // 这样实现足够简单，但也意味着后面要继续补更严格的 header 校验。
         let head = String::from_utf8(buffer[..header_end].to_vec())
             .map_err(|_| GatewayError::Protocol("request head is not valid utf-8".into()))?;
         let mut lines = head.split("\r\n");
@@ -291,6 +301,8 @@ impl HttpRequest {
             body.truncate(content_length);
         }
 
+        // HTTP/1.1 的 Host 头是强约束，缺失时直接拒绝，
+        // 这样可以减少后续路由歧义和请求走私风险。
         if headers
             .iter()
             .all(|(name, value)| !name.eq_ignore_ascii_case("host") || value.is_empty())
@@ -330,6 +342,7 @@ impl HttpRequest {
         upstream: &mut TcpStream,
         request_context: &RequestContext,
     ) -> Result<()> {
+        // 转发时会清理 hop-by-hop 头，并补齐代理侧需要的最小公共头。
         let mut request_bytes = Vec::with_capacity(1024 + self.body.len());
         request_bytes.extend_from_slice(
             format!(
@@ -373,9 +386,8 @@ impl HttpRequest {
 
         request_bytes.extend_from_slice(b"Connection: close\r\n");
         if !has_content_length {
-            request_bytes.extend_from_slice(
-                format!("Content-Length: {}\r\n", self.body.len()).as_bytes(),
-            );
+            request_bytes
+                .extend_from_slice(format!("Content-Length: {}\r\n", self.body.len()).as_bytes());
         }
         request_bytes.extend_from_slice(b"\r\n");
         request_bytes.extend_from_slice(&self.body);
@@ -400,6 +412,8 @@ fn parse_content_length(headers: &[(String, String)]) -> Result<usize> {
                 GatewayError::Protocol(format!("invalid content-length header value {}", value))
             })?;
             match content_length {
+                // 这里从严处理重复 Content-Length，
+                // 先优先规避请求走私和上下游解析不一致的问题。
                 Some(existing) if existing != parsed => {
                     return Err(GatewayError::Protocol(
                         "conflicting content-length headers are not allowed".into(),
@@ -435,6 +449,7 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
+/// 这里只取状态行里的状态码，足够支撑当前重试和响应上下文。
 fn parse_status_code(bytes: &[u8]) -> Option<u16> {
     let head = bytes.split(|byte| *byte == b'\n').next()?;
     let line = String::from_utf8_lossy(head);
@@ -448,6 +463,7 @@ fn is_retryable_status(status_code: u16) -> bool {
     matches!(status_code, 500 | 502 | 503 | 504)
 }
 
+/// 运行时在请求失败后会回落到这里，把内部错误映射成最小可读 HTTP 响应。
 pub fn error_response(error: &GatewayError) -> Vec<u8> {
     let (status, reason) = match error {
         GatewayError::RouteNotMatched => (404_u16, "Not Found"),
