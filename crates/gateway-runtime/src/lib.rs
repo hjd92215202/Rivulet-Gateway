@@ -2,7 +2,7 @@
 //! 它不关心某次请求具体怎么转发，只关心“系统如何活起来并稳定运行”。
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gateway_config::GatewayConfigFile;
 use gateway_observability::{AccessLogRecord, RuntimeStats, RuntimeStatsSnapshot, emit_access_log};
@@ -103,6 +103,12 @@ impl GatewayApp {
                 .await
                 .map_err(|err| GatewayError::Io(format!("listener task join error: {}", err)))??;
         }
+
+        wait_for_connection_drain(
+            Arc::clone(&shared),
+            shared.config.runtime_settings().graceful_shutdown,
+        )
+        .await;
 
         Ok(())
     }
@@ -209,6 +215,17 @@ async fn health_check_loop(
     }
 
     Ok(())
+}
+
+async fn wait_for_connection_drain(app: Arc<GatewayApp>, timeout: Duration) {
+    let started_at = Instant::now();
+
+    while started_at.elapsed() < timeout {
+        if app.stats.snapshot().active_connections == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[cfg(test)]
@@ -421,6 +438,82 @@ mod tests {
 
         let after = app.stats_snapshot();
         assert_eq!(after.total_requests, 1);
+    }
+
+    #[tokio::test]
+    async fn run_until_waits_for_inflight_connection_to_finish() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            sleep(Duration::from_millis(120)).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("write backend response");
+        });
+
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                graceful_shutdown_secs: 1,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let started_at = Instant::now();
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(40)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(10)).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", listener_port))
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /wait HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        server.await.expect("server task").expect("gateway ok");
+        assert!(started_at.elapsed() >= Duration::from_millis(100));
     }
 
     fn reserve_port() -> u16 {

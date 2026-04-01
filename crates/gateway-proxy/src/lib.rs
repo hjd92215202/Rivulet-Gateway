@@ -163,19 +163,21 @@ impl ProxyService {
 
                     endpoint_state.record_success(cluster.passive_success_threshold());
 
-                    downstream
-                        .write_all(&upstream_bytes)
-                        .await
-                        .map_err(|err| ProxyConnectionError {
+                    downstream.write_all(&upstream_bytes).await.map_err(|err| {
+                        ProxyConnectionError {
                             error: GatewayError::Io(format!("write downstream response: {}", err)),
                             request: Some(request_context.clone()),
                             retries: attempt,
-                        })?;
-                    downstream.flush().await.map_err(|err| ProxyConnectionError {
-                        error: GatewayError::Io(format!("flush downstream response: {}", err)),
-                        request: Some(request_context.clone()),
-                        retries: attempt,
+                        }
                     })?;
+                    downstream
+                        .flush()
+                        .await
+                        .map_err(|err| ProxyConnectionError {
+                            error: GatewayError::Io(format!("flush downstream response: {}", err)),
+                            request: Some(request_context.clone()),
+                            retries: attempt,
+                        })?;
 
                     let mut response = ResponseContext::new(status_code);
                     response.upstream = Some(endpoint.address);
