@@ -2,10 +2,11 @@
 //! 它不关心某次请求具体怎么转发，只关心“系统如何活起来并稳定运行”。
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use gateway_config::GatewayConfigFile;
-use gateway_observability::RuntimeStats;
-use gateway_proxy::ProxyService;
+use gateway_observability::{AccessLogRecord, RuntimeStats, RuntimeStatsSnapshot, emit_access_log};
+use gateway_proxy::{ProxyService, status_code_for_error};
 use gateway_router::Router;
 use gateway_types::{GatewayError, RequestContext, ResponseContext, Result, Shared};
 use gateway_upstream::{UpstreamRegistry, probe_endpoint};
@@ -36,7 +37,7 @@ impl GatewayApp {
     }
 
     pub async fn handle(&self, request: RequestContext) -> Result<ResponseContext> {
-        self.stats.record_request();
+        self.stats.record_request_started();
         self.proxy.handle(request).await
     }
 
@@ -47,6 +48,10 @@ impl GatewayApp {
             upstreams: self.config.upstreams.len(),
             worker_threads: self.config.runtime.worker_threads,
         }
+    }
+
+    pub fn stats_snapshot(&self) -> RuntimeStatsSnapshot {
+        self.stats.snapshot()
     }
 
     pub async fn run_until<F>(self, shutdown: F) -> Result<()>
@@ -131,13 +136,43 @@ async fn listener_loop(
                 let app = Arc::clone(&app);
                 let listener_name = listener_name.clone();
                 tokio::spawn(async move {
+                    app.stats.record_connection_opened();
+                    app.stats.record_request_started();
+                    let started_at = Instant::now();
+
                     // 单个连接失败不应该把整个 listener 打崩，
                     // 所以这里把错误就地转换成 HTTP 响应返回给客户端。
-                    if let Err(error) = app.proxy.handle_connection(&listener_name, &mut stream, client_addr).await {
-                        let response = gateway_proxy::error_response(&error);
-                        let _ = stream.write_all(&response).await;
-                        let _ = stream.flush().await;
+                    match app.proxy.handle_connection(&listener_name, &mut stream, client_addr).await {
+                        Ok(completed) => {
+                            app.stats.record_request_completed(completed.response.status_code);
+                            app.stats.record_retries(completed.retries);
+                            emit_access_log(&AccessLogRecord::success(
+                                &completed.request,
+                                &completed.response,
+                                started_at.elapsed().as_millis(),
+                                completed.retries,
+                            ));
+                        }
+                        Err(error) => {
+                            let status_code = status_code_for_error(&error.error);
+                            app.stats.record_request_completed(status_code);
+                            app.stats.record_retries(error.retries);
+                            emit_access_log(&AccessLogRecord::failure(
+                                listener_name.clone(),
+                                error.request.as_ref(),
+                                status_code,
+                                started_at.elapsed().as_millis(),
+                                error.retries,
+                                error.error.to_string(),
+                            ));
+
+                            let response = gateway_proxy::error_response(&error.error);
+                            let _ = stream.write_all(&response).await;
+                            let _ = stream.flush().await;
+                        }
                     }
+
+                    app.stats.record_connection_closed();
                 });
             }
         }
@@ -337,6 +372,55 @@ mod tests {
         assert!(text.starts_with("HTTP/1.1 404 Not Found"));
 
         server.await.expect("server task").expect("gateway ok");
+    }
+
+    #[tokio::test]
+    async fn handle_updates_runtime_stats_snapshot() {
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:8080".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let before = app.stats_snapshot();
+        assert_eq!(before.total_requests, 0);
+
+        let response = app
+            .handle(RequestContext::new(
+                "edge",
+                "example.test",
+                "/health",
+                gateway_types::HttpMethod::Get,
+            ))
+            .await
+            .expect("handle should succeed");
+
+        assert_eq!(response.status_code, 200);
+
+        let after = app.stats_snapshot();
+        assert_eq!(after.total_requests, 1);
     }
 
     fn reserve_port() -> u16 {

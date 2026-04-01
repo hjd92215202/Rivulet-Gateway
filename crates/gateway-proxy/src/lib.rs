@@ -21,6 +21,20 @@ pub struct ProxyService {
     timeouts: RuntimeSettings,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompletedRequest {
+    pub request: RequestContext,
+    pub response: ResponseContext,
+    pub retries: usize,
+}
+
+#[derive(Debug)]
+pub struct ProxyConnectionError {
+    pub error: GatewayError,
+    pub request: Option<RequestContext>,
+    pub retries: usize,
+}
+
 impl ProxyService {
     pub fn new(
         router: Router,
@@ -62,11 +76,16 @@ impl ProxyService {
         listener_name: &str,
         downstream: &mut TcpStream,
         client_addr: SocketAddr,
-    ) -> Result<()> {
+    ) -> std::result::Result<CompletedRequest, ProxyConnectionError> {
         // 这条链路是“真实网络请求”的主路径：
         // 读请求 -> 路由 -> 过滤器 -> 选上游 -> 转发 -> 回写响应。
-        let request =
-            HttpRequest::read_from(downstream, self.timeouts.downstream_read_timeout).await?;
+        let request = HttpRequest::read_from(downstream, self.timeouts.downstream_read_timeout)
+            .await
+            .map_err(|error| ProxyConnectionError {
+                error,
+                request: None,
+                retries: 0,
+            })?;
         let mut request_context = RequestContext::new(
             listener_name,
             request.host_header(),
@@ -75,20 +94,46 @@ impl ProxyService {
         );
         request_context.client_addr = Some(client_addr);
 
-        let route = self.router.resolve(&request_context)?;
+        let route =
+            self.router
+                .resolve(&request_context)
+                .map_err(|error| ProxyConnectionError {
+                    error,
+                    request: Some(request_context.clone()),
+                    retries: 0,
+                })?;
         self.filters
             .run_before(&route.filter_names, &mut request_context)
-            .await?;
+            .await
+            .map_err(|error| ProxyConnectionError {
+                error,
+                request: Some(request_context.clone()),
+                retries: 0,
+            })?;
 
-        let cluster = self.upstreams.cluster(&route.upstream_name)?;
+        let cluster = self
+            .upstreams
+            .cluster(&route.upstream_name)
+            .map_err(|error| ProxyConnectionError {
+                error,
+                request: Some(request_context.clone()),
+                retries: 0,
+            })?;
         let mut excluded_addresses = Vec::new();
-        let mut final_outcome = None;
+        let mut final_outcome: Option<std::result::Result<CompletedRequest, ProxyConnectionError>> =
+            None;
 
         for attempt in 0..self.timeouts.upstream_retry_attempts {
             let endpoint_state = match cluster.select_endpoint(&excluded_addresses) {
                 Ok(endpoint) => endpoint,
                 Err(error) if attempt > 0 => break,
-                Err(error) => return Err(error),
+                Err(error) => {
+                    return Err(ProxyConnectionError {
+                        error,
+                        request: Some(request_context.clone()),
+                        retries: attempt,
+                    });
+                }
             };
 
             let endpoint = endpoint_state.endpoint().clone();
@@ -105,20 +150,31 @@ impl ProxyService {
                     {
                         endpoint_state.record_failure(cluster.passive_failure_threshold());
                         excluded_addresses.push(endpoint.address.clone());
-                        final_outcome = Some(Err(GatewayError::Io(format!(
-                            "retryable upstream status {}",
-                            status_code
-                        ))));
+                        final_outcome = Some(Err(ProxyConnectionError {
+                            error: GatewayError::Io(format!(
+                                "retryable upstream status {}",
+                                status_code
+                            )),
+                            request: Some(request_context.clone()),
+                            retries: attempt + 1,
+                        }));
                         continue;
                     }
 
                     endpoint_state.record_success(cluster.passive_success_threshold());
 
-                    downstream.write_all(&upstream_bytes).await.map_err(|err| {
-                        GatewayError::Io(format!("write downstream response: {}", err))
-                    })?;
-                    downstream.flush().await.map_err(|err| {
-                        GatewayError::Io(format!("flush downstream response: {}", err))
+                    downstream
+                        .write_all(&upstream_bytes)
+                        .await
+                        .map_err(|err| ProxyConnectionError {
+                            error: GatewayError::Io(format!("write downstream response: {}", err)),
+                            request: Some(request_context.clone()),
+                            retries: attempt,
+                        })?;
+                    downstream.flush().await.map_err(|err| ProxyConnectionError {
+                        error: GatewayError::Io(format!("flush downstream response: {}", err)),
+                        request: Some(request_context.clone()),
+                        retries: attempt,
                     })?;
 
                     let mut response = ResponseContext::new(status_code);
@@ -126,20 +182,38 @@ impl ProxyService {
 
                     self.filters
                         .run_after(&route.filter_names, &mut response)
-                        .await?;
+                        .await
+                        .map_err(|error| ProxyConnectionError {
+                            error,
+                            request: Some(request_context.clone()),
+                            retries: attempt,
+                        })?;
 
-                    return Ok(());
+                    return Ok(CompletedRequest {
+                        request: request_context,
+                        response,
+                        retries: attempt,
+                    });
                 }
                 Err(error) => {
                     endpoint_state.record_failure(cluster.passive_failure_threshold());
                     excluded_addresses.push(endpoint.address.clone());
-                    final_outcome = Some(Err(error));
+                    final_outcome = Some(Err(ProxyConnectionError {
+                        error,
+                        request: Some(request_context.clone()),
+                        retries: attempt + 1,
+                    }));
                 }
             }
         }
 
-        final_outcome
-            .unwrap_or_else(|| Err(GatewayError::NoHealthyUpstream(route.upstream_name.clone())))
+        final_outcome.unwrap_or_else(|| {
+            Err(ProxyConnectionError {
+                error: GatewayError::NoHealthyUpstream(route.upstream_name.clone()),
+                request: Some(request_context),
+                retries: self.timeouts.upstream_retry_attempts.saturating_sub(1),
+            })
+        })
     }
 
     async fn forward_to_endpoint(
@@ -465,17 +539,7 @@ fn is_retryable_status(status_code: u16) -> bool {
 
 /// 运行时在请求失败后会回落到这里，把内部错误映射成最小可读 HTTP 响应。
 pub fn error_response(error: &GatewayError) -> Vec<u8> {
-    let (status, reason) = match error {
-        GatewayError::RouteNotMatched => (404_u16, "Not Found"),
-        GatewayError::Unsupported(_) => (501_u16, "Not Implemented"),
-        GatewayError::Protocol(_)
-        | GatewayError::InvalidConfig(_)
-        | GatewayError::FilterRejected(_) => (400_u16, "Bad Request"),
-        GatewayError::NoHealthyUpstream(_) | GatewayError::NotFound(_) => {
-            (503_u16, "Service Unavailable")
-        }
-        GatewayError::Io(_) => (502_u16, "Bad Gateway"),
-    };
+    let (status, reason) = status_and_reason_for_error(error);
 
     let body = format!("{} {}\n", status, reason);
     format!(
@@ -486,6 +550,24 @@ pub fn error_response(error: &GatewayError) -> Vec<u8> {
         body
     )
     .into_bytes()
+}
+
+pub fn status_code_for_error(error: &GatewayError) -> u16 {
+    status_and_reason_for_error(error).0
+}
+
+fn status_and_reason_for_error(error: &GatewayError) -> (u16, &'static str) {
+    match error {
+        GatewayError::RouteNotMatched => (404_u16, "Not Found"),
+        GatewayError::Unsupported(_) => (501_u16, "Not Implemented"),
+        GatewayError::Protocol(_)
+        | GatewayError::InvalidConfig(_)
+        | GatewayError::FilterRejected(_) => (400_u16, "Bad Request"),
+        GatewayError::NoHealthyUpstream(_) | GatewayError::NotFound(_) => {
+            (503_u16, "Service Unavailable")
+        }
+        GatewayError::Io(_) => (502_u16, "Bad Gateway"),
+    }
 }
 
 #[cfg(test)]
@@ -562,10 +644,12 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
-            service
+            let completed = service
                 .handle_connection("edge", &mut downstream, client_addr)
                 .await
                 .expect("proxy request");
+            assert_eq!(completed.response.status_code, 200);
+            assert_eq!(completed.retries, 0);
         });
 
         let mut client = TcpStream::connect(gateway_addr)
@@ -762,7 +846,10 @@ mod tests {
 
         let outcome = server.await.expect("gateway task");
         match outcome {
-            Err(GatewayError::Io(message)) => {
+            Err(ProxyConnectionError {
+                error: GatewayError::Io(message),
+                ..
+            }) => {
                 assert!(message.contains("timed out"));
             }
             other => panic!("expected upstream timeout error, got {:?}", other),
@@ -900,10 +987,11 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
-            service
+            let completed = service
                 .handle_connection("edge", &mut downstream, client_addr)
                 .await
                 .expect("proxy request");
+            assert_eq!(completed.retries, 1);
         });
 
         let mut client = TcpStream::connect(gateway_addr)
