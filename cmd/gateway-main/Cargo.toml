@@ -1,0 +1,9 @@
+[package]
+name = "gateway-main"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gateway-config = { path = "../../crates/gateway-config" }
+gateway-runtime = { path = "../../crates/gateway-runtime" }
+tokio = { workspace = true }

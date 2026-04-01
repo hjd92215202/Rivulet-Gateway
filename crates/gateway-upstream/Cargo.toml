@@ -1,0 +1,8 @@
+[package]
+name = "gateway-upstream"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gateway-config = { path = "../gateway-config" }
+gateway-types = { path = "../gateway-types" }

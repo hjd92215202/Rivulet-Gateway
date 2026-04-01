@@ -1,0 +1,14 @@
+[package]
+name = "gateway-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gateway-config = { path = "../gateway-config" }
+gateway-filters = { path = "../gateway-filters" }
+gateway-observability = { path = "../gateway-observability" }
+gateway-proxy = { path = "../gateway-proxy" }
+gateway-router = { path = "../gateway-router" }
+gateway-types = { path = "../gateway-types" }
+gateway-upstream = { path = "../gateway-upstream" }
+tokio = { workspace = true }

@@ -1,0 +1,12 @@
+[package]
+name = "gateway-proxy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gateway-config = { path = "../gateway-config" }
+gateway-filters = { path = "../gateway-filters" }
+gateway-router = { path = "../gateway-router" }
+gateway-types = { path = "../gateway-types" }
+gateway-upstream = { path = "../gateway-upstream" }
+tokio = { workspace = true }

@@ -1,0 +1,9 @@
+[package]
+name = "gateway-config"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gateway-types = { path = "../gateway-types" }
+serde = { workspace = true }
+toml = { workspace = true }
