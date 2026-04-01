@@ -192,7 +192,21 @@ pub struct UpstreamConfig {
     pub name: String,
     #[serde(default)]
     pub load_balance: LoadBalanceConfig,
+    #[serde(default)]
+    pub health_check: Option<HealthCheckConfig>,
     pub endpoints: Vec<EndpointConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct HealthCheckConfig {
+    #[serde(default = "default_health_check_interval_ms")]
+    pub interval_ms: u64,
+    #[serde(default = "default_health_check_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_health_check_healthy_threshold")]
+    pub healthy_threshold: u32,
+    #[serde(default = "default_health_check_unhealthy_threshold")]
+    pub unhealthy_threshold: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -231,4 +245,20 @@ fn default_upstream_connect_timeout_ms() -> u64 {
 
 fn default_upstream_read_timeout_ms() -> u64 {
     5_000
+}
+
+fn default_health_check_interval_ms() -> u64 {
+    3_000
+}
+
+fn default_health_check_timeout_ms() -> u64 {
+    1_000
+}
+
+fn default_health_check_healthy_threshold() -> u32 {
+    2
+}
+
+fn default_health_check_unhealthy_threshold() -> u32 {
+    2
 }

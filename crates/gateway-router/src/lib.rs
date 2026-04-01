@@ -88,6 +88,7 @@ mod tests {
             upstreams: vec![UpstreamConfig {
                 name: "api-cluster".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
                 endpoints: vec![gateway_config::EndpointConfig {
                     address: "127.0.0.1:9000".into(),
                     weight: 1,

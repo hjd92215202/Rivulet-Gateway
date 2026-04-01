@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 gateway-config = { path = "../gateway-config" }
 gateway-types = { path = "../gateway-types" }
+tokio = { workspace = true }

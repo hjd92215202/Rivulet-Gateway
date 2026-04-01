@@ -445,6 +445,7 @@ mod tests {
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
                 endpoints: vec![EndpointConfig {
                     address: backend_addr.to_string(),
                     weight: 1,
@@ -527,6 +528,7 @@ mod tests {
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
                 endpoints: vec![EndpointConfig {
                     address: backend_addr.to_string(),
                     weight: 1,

@@ -5,7 +5,7 @@ use gateway_observability::RuntimeStats;
 use gateway_proxy::ProxyService;
 use gateway_router::Router;
 use gateway_types::{GatewayError, RequestContext, ResponseContext, Result, Shared};
-use gateway_upstream::UpstreamRegistry;
+use gateway_upstream::{UpstreamRegistry, probe_endpoint};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -13,6 +13,7 @@ use tokio::sync::watch;
 pub struct GatewayApp {
     config: GatewayConfigFile,
     proxy: ProxyService,
+    upstreams: UpstreamRegistry,
     stats: Shared<RuntimeStats>,
 }
 
@@ -25,7 +26,8 @@ impl GatewayApp {
 
         Self {
             config,
-            proxy: ProxyService::new(router, filters, upstreams, runtime_settings),
+            proxy: ProxyService::new(router, filters, upstreams.clone(), runtime_settings),
+            upstreams,
             stats: Arc::new(RuntimeStats::default()),
         }
     }
@@ -51,6 +53,17 @@ impl GatewayApp {
         let shared = Arc::new(self);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut handles = Vec::new();
+
+        for cluster in shared.upstreams.clusters() {
+            if cluster.health_check.is_some() {
+                let app = Arc::clone(&shared);
+                let cluster_name = cluster.name.clone();
+                let cluster_shutdown = shutdown_rx.clone();
+                handles.push(tokio::spawn(async move {
+                    health_check_loop(app, cluster_name, cluster_shutdown).await
+                }));
+            }
+        }
 
         for listener in shared.config.listeners.clone() {
             let tcp_listener = TcpListener::bind(&listener.address)
@@ -126,6 +139,35 @@ async fn listener_loop(
     Ok(())
 }
 
+async fn health_check_loop(
+    app: Arc<GatewayApp>,
+    cluster_name: String,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    let cluster = app.upstreams.cluster(&cluster_name)?.clone();
+    let config = cluster.health_check.clone().ok_or_else(|| {
+        GatewayError::InvalidConfig(format!("cluster {} missing health config", cluster_name))
+    })?;
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(config.interval_ms));
+
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                match changed {
+                    Ok(_) | Err(_) => break,
+                }
+            }
+            _ = ticker.tick() => {
+                for endpoint in cluster.endpoints() {
+                    let _ = probe_endpoint(endpoint.as_ref(), &config).await;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +232,7 @@ mod tests {
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
                 endpoints: vec![EndpointConfig {
                     address: backend_addr.to_string(),
                     weight: 1,
