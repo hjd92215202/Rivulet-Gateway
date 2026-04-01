@@ -1,24 +1,35 @@
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use gateway_filters::FilterRegistry;
 use gateway_router::Router;
-use gateway_types::{GatewayError, HttpMethod, RequestContext, ResponseContext, Result};
+use gateway_types::{
+    GatewayError, HttpMethod, RequestContext, ResponseContext, Result, RuntimeSettings,
+};
 use gateway_upstream::UpstreamRegistry;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 pub struct ProxyService {
     router: Router,
     filters: FilterRegistry,
     upstreams: UpstreamRegistry,
+    timeouts: RuntimeSettings,
 }
 
 impl ProxyService {
-    pub fn new(router: Router, filters: FilterRegistry, upstreams: UpstreamRegistry) -> Self {
+    pub fn new(
+        router: Router,
+        filters: FilterRegistry,
+        upstreams: UpstreamRegistry,
+        timeouts: RuntimeSettings,
+    ) -> Self {
         Self {
             router,
             filters,
             upstreams,
+            timeouts,
         }
     }
 
@@ -49,7 +60,8 @@ impl ProxyService {
         downstream: &mut TcpStream,
         client_addr: SocketAddr,
     ) -> Result<()> {
-        let request = HttpRequest::read_from(downstream).await?;
+        let request =
+            HttpRequest::read_from(downstream, self.timeouts.downstream_read_timeout).await?;
         let mut request_context = RequestContext::new(
             listener_name,
             request.host_header(),
@@ -68,7 +80,18 @@ impl ProxyService {
             .cluster(&route.upstream_name)?
             .next_endpoint()?;
 
-        let mut upstream = TcpStream::connect(&endpoint.address).await.map_err(|err| {
+        let mut upstream = timeout(
+            self.timeouts.upstream_connect_timeout,
+            TcpStream::connect(&endpoint.address),
+        )
+        .await
+        .map_err(|_| {
+            GatewayError::Io(format!(
+                "connect upstream {} timed out after {:?}",
+                endpoint.address, self.timeouts.upstream_connect_timeout
+            ))
+        })?
+        .map_err(|err| {
             GatewayError::Io(format!("connect upstream {}: {}", endpoint.address, err))
         })?;
 
@@ -77,10 +100,18 @@ impl ProxyService {
             .await?;
 
         let mut upstream_bytes = Vec::new();
-        upstream
-            .read_to_end(&mut upstream_bytes)
-            .await
-            .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
+        timeout(
+            self.timeouts.upstream_read_timeout,
+            upstream.read_to_end(&mut upstream_bytes),
+        )
+        .await
+        .map_err(|_| {
+            GatewayError::Io(format!(
+                "read upstream response timed out after {:?}",
+                self.timeouts.upstream_read_timeout
+            ))
+        })?
+        .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
 
         if upstream_bytes.is_empty() {
             return Err(GatewayError::Protocol(
@@ -119,7 +150,7 @@ struct HttpRequest {
 }
 
 impl HttpRequest {
-    async fn read_from(stream: &mut TcpStream) -> Result<Self> {
+    async fn read_from(stream: &mut TcpStream, read_timeout: Duration) -> Result<Self> {
         const MAX_HEADER_BYTES: usize = 64 * 1024;
         let mut buffer = Vec::with_capacity(2048);
         let mut temp = [0_u8; 2048];
@@ -133,9 +164,14 @@ impl HttpRequest {
                     "request headers exceed maximum size".into(),
                 ));
             }
-            let read = stream
-                .read(&mut temp)
+            let read = timeout(read_timeout, stream.read(&mut temp))
                 .await
+                .map_err(|_| {
+                    GatewayError::Io(format!(
+                        "read downstream request timed out after {:?}",
+                        read_timeout
+                    ))
+                })?
                 .map_err(|err| GatewayError::Io(format!("read downstream request: {}", err)))?;
             if read == 0 {
                 return Err(GatewayError::Protocol(
@@ -195,9 +231,14 @@ impl HttpRequest {
         if body.len() < content_length {
             let remaining = content_length - body.len();
             let mut extra = vec![0_u8; remaining];
-            stream
-                .read_exact(&mut extra)
+            timeout(read_timeout, stream.read_exact(&mut extra))
                 .await
+                .map_err(|_| {
+                    GatewayError::Io(format!(
+                        "read request body timed out after {:?}",
+                        read_timeout
+                    ))
+                })?
                 .map_err(|err| GatewayError::Io(format!("read request body: {}", err)))?;
             body.extend_from_slice(&extra);
         } else if body.len() > content_length {
@@ -360,6 +401,7 @@ mod tests {
         RouteConfig, RuntimeConfig, UpstreamConfig,
     };
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn proxies_http_request_to_upstream() {
@@ -370,7 +412,7 @@ mod tests {
 
         tokio::spawn(async move {
             let (mut stream, _) = backend.accept().await.expect("accept backend");
-            let request = HttpRequest::read_from(&mut stream)
+            let request = HttpRequest::read_from(&mut stream, Duration::from_secs(1))
                 .await
                 .expect("read backend request");
             assert_eq!(request.path_for_route(), "/hello");
@@ -414,6 +456,7 @@ mod tests {
             Router::from_config(&config),
             FilterRegistry::with_defaults(),
             UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
         );
 
         let gateway = TcpListener::bind("127.0.0.1:0")
@@ -448,5 +491,82 @@ mod tests {
         let text = String::from_utf8(response).expect("utf-8 response");
         assert!(text.starts_with("HTTP/1.1 200 OK"));
         assert!(text.ends_with("hello"));
+    }
+
+    #[tokio::test]
+    async fn returns_timeout_when_upstream_response_stalls() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (_stream, _) = backend.accept().await.expect("accept backend");
+            sleep(Duration::from_millis(120)).await;
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                upstream_read_timeout_ms: 50,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task");
+        match outcome {
+            Err(GatewayError::Io(message)) => {
+                assert!(message.contains("timed out"));
+            }
+            other => panic!("expected upstream timeout error, got {:?}", other),
+        }
     }
 }

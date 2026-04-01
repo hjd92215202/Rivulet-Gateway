@@ -89,6 +89,11 @@ impl GatewayConfigFile {
         RuntimeSettings {
             worker_threads: self.runtime.worker_threads,
             graceful_shutdown: Duration::from_secs(self.runtime.graceful_shutdown_secs),
+            downstream_read_timeout: Duration::from_millis(self.runtime.downstream_read_timeout_ms),
+            upstream_connect_timeout: Duration::from_millis(
+                self.runtime.upstream_connect_timeout_ms,
+            ),
+            upstream_read_timeout: Duration::from_millis(self.runtime.upstream_read_timeout_ms),
         }
     }
 }
@@ -99,6 +104,12 @@ pub struct RuntimeConfig {
     pub worker_threads: usize,
     #[serde(default = "default_graceful_shutdown_secs")]
     pub graceful_shutdown_secs: u64,
+    #[serde(default = "default_downstream_read_timeout_ms")]
+    pub downstream_read_timeout_ms: u64,
+    #[serde(default = "default_upstream_connect_timeout_ms")]
+    pub upstream_connect_timeout_ms: u64,
+    #[serde(default = "default_upstream_read_timeout_ms")]
+    pub upstream_read_timeout_ms: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -106,6 +117,9 @@ impl Default for RuntimeConfig {
         Self {
             worker_threads: default_worker_threads(),
             graceful_shutdown_secs: default_graceful_shutdown_secs(),
+            downstream_read_timeout_ms: default_downstream_read_timeout_ms(),
+            upstream_connect_timeout_ms: default_upstream_connect_timeout_ms(),
+            upstream_read_timeout_ms: default_upstream_read_timeout_ms(),
         }
     }
 }
@@ -205,4 +219,16 @@ fn default_worker_threads() -> usize {
 
 fn default_graceful_shutdown_secs() -> u64 {
     30
+}
+
+fn default_downstream_read_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_upstream_connect_timeout_ms() -> u64 {
+    3_000
+}
+
+fn default_upstream_read_timeout_ms() -> u64 {
+    5_000
 }

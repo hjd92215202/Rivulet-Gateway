@@ -138,6 +138,9 @@ pub struct UpstreamEndpoint {
 pub struct RuntimeSettings {
     pub worker_threads: usize,
     pub graceful_shutdown: Duration,
+    pub downstream_read_timeout: Duration,
+    pub upstream_connect_timeout: Duration,
+    pub upstream_read_timeout: Duration,
 }
 
 impl Default for RuntimeSettings {
@@ -145,6 +148,9 @@ impl Default for RuntimeSettings {
         Self {
             worker_threads: 4,
             graceful_shutdown: Duration::from_secs(30),
+            downstream_read_timeout: Duration::from_secs(5),
+            upstream_connect_timeout: Duration::from_secs(3),
+            upstream_read_timeout: Duration::from_secs(5),
         }
     }
 }

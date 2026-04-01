@@ -21,10 +21,11 @@ impl GatewayApp {
         let router = Router::from_config(&config);
         let filters = gateway_filters::FilterRegistry::with_defaults();
         let upstreams = UpstreamRegistry::from_config(&config);
+        let runtime_settings = config.runtime_settings();
 
         Self {
             config,
-            proxy: ProxyService::new(router, filters, upstreams),
+            proxy: ProxyService::new(router, filters, upstreams, runtime_settings),
             stats: Arc::new(RuntimeStats::default()),
         }
     }
@@ -123,4 +124,115 @@ async fn listener_loop(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gateway_config::{
+        EndpointConfig, ListenerConfig, LoadBalanceConfig, ProtocolConfig, RouteConfig,
+        RuntimeConfig, UpstreamConfig,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::time::{Duration, sleep};
+
+    #[tokio::test]
+    async fn run_until_serves_proxy_traffic() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("read backend request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&request);
+            assert!(text.starts_with("GET /health HTTP/1.1"));
+
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("write backend response");
+        });
+
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(250)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(40)).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", listener_port))
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /health HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+        assert!(text.ends_with("ok"));
+
+        server.await.expect("server task").expect("gateway ok");
+    }
+
+    fn reserve_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("reserve port")
+            .local_addr()
+            .expect("local addr")
+            .port()
+    }
 }
