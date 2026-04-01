@@ -18,6 +18,11 @@ protocol = "http1"
 name = "api-cluster"
 load_balance = "round_robin"
 
+[upstreams.policy]
+connect_timeout_ms = 1500
+read_timeout_ms = 4000
+retry_attempts = 2
+
 [upstreams.health_check]
 interval_ms = 3000
 timeout_ms = 1000
@@ -40,3 +45,6 @@ path_prefixes = ["/v1/"]
 methods = ["GET", "POST"]
 upstream = "api-cluster"
 filters = ["request-id", "access-log"]
+
+[routes.policy]
+read_timeout_ms = 2500

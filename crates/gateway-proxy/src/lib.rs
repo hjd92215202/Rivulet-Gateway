@@ -6,7 +6,8 @@ use std::net::SocketAddr;
 use gateway_filters::FilterRegistry;
 use gateway_router::Router;
 use gateway_types::{
-    GatewayError, HttpMethod, RequestContext, ResponseContext, Result, RuntimeSettings,
+    GatewayError, HttpMethod, RequestContext, ResolvedProxyPolicy, ResponseContext, Result,
+    RuntimeSettings,
 };
 use gateway_upstream::{EndpointState, UpstreamRegistry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -138,12 +139,14 @@ impl ProxyService {
                 retries: 0,
             })?;
         // 记录这次请求已经尝试失败过的地址，避免重试回到同一个坏节点。
+        // 杩欓噷鏄湰娆¤姹傜湡姝ｇ敓鏁堢殑杞彂绛栫暐锛?        // 浼樺厛绾у浐瀹氫负 route override -> upstream override -> runtime default銆?
+        let policy = route.proxy_policy.or_else(cluster.proxy_policy()).resolve(&self.timeouts);
         let mut excluded_addresses = Vec::new();
         // 所有尝试都失败时，最终会从这里返回最后一个可解释错误。
         let mut final_outcome: Option<std::result::Result<CompletedRequest, ProxyConnectionError>> =
             None;
 
-        for attempt in 0..self.timeouts.upstream_retry_attempts {
+        for attempt in 0..policy.upstream_retry_attempts {
             // 每轮都从“健康且这次没失败过”的节点里选一个地址。
             let endpoint_state = match cluster.select_endpoint(&excluded_addresses) {
                 Ok(endpoint) => endpoint,
@@ -160,7 +163,7 @@ impl ProxyService {
             let endpoint = endpoint_state.endpoint().clone();
             // 与单个 upstream 的交互细节都收口到独立函数里。
             let outcome = self
-                .forward_to_endpoint(&endpoint_state, &request, &request_context)
+                .forward_to_endpoint(&endpoint_state, &request, &request_context, policy)
                 .await;
 
             match outcome {
@@ -169,7 +172,7 @@ impl ProxyService {
                     let status_code = parse_status_code(&upstream_bytes).unwrap_or(200);
                     // 第一阶段只对少数典型 5xx 做重试，先避免把非幂等请求重试面铺得太大。
                     if is_retryable_status(status_code)
-                        && attempt + 1 < self.timeouts.upstream_retry_attempts
+                        && attempt + 1 < policy.upstream_retry_attempts
                     {
                         endpoint_state.record_failure(cluster.passive_failure_threshold());
                         excluded_addresses.push(endpoint.address.clone());
@@ -240,7 +243,7 @@ impl ProxyService {
             Err(ProxyConnectionError {
                 error: GatewayError::NoHealthyUpstream(route.upstream_name.clone()),
                 request: Some(request_context),
-                retries: self.timeouts.upstream_retry_attempts.saturating_sub(1),
+                retries: policy.upstream_retry_attempts.saturating_sub(1),
             })
         })
     }
@@ -250,20 +253,23 @@ impl ProxyService {
         endpoint_state: &EndpointState,
         request: &HttpRequest,
         request_context: &RequestContext,
+        // 杩欓噷浼犲叆鐨勫凡缁忔槸鏈€缁堢‘瀹氬ソ鐨勭瓥鐣ワ紝
+        // 鎵€浠ヤ笌鍗曚釜 upstream 鐨勪氦浜掕繃绋嬩笉鐢ㄥ啀鍏虫敞绛栫暐浼樺厛绾ч棶棰樸€?
+        policy: ResolvedProxyPolicy,
     ) -> Result<Vec<u8>> {
         // 这里把“与单个 upstream 交互”收口成独立函数，
         // 方便后面接入更细的错误分类、重试预算和连接池。
         let endpoint = endpoint_state.endpoint();
         // 建连阶段受 connect timeout 保护，避免坏节点无限拖住请求。
         let mut upstream = timeout(
-            self.timeouts.upstream_connect_timeout,
+            policy.upstream_connect_timeout,
             TcpStream::connect(&endpoint.address),
         )
         .await
         .map_err(|_| {
             GatewayError::Io(format!(
                 "connect upstream {} timed out after {:?}",
-                endpoint.address, self.timeouts.upstream_connect_timeout
+                endpoint.address, policy.upstream_connect_timeout
             ))
         })?
         .map_err(|err| {
@@ -277,14 +283,14 @@ impl ProxyService {
         // 当前第一版先把响应整段读完，后面再升级成流式模型。
         let mut upstream_bytes = Vec::new();
         timeout(
-            self.timeouts.upstream_read_timeout,
+            policy.upstream_read_timeout,
             upstream.read_to_end(&mut upstream_bytes),
         )
         .await
         .map_err(|_| {
             GatewayError::Io(format!(
                 "read upstream response timed out after {:?}",
-                self.timeouts.upstream_read_timeout
+                policy.upstream_read_timeout
             ))
         })?
         .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
@@ -676,7 +682,7 @@ mod tests {
     use super::*;
     use gateway_config::{
         EndpointConfig, GatewayConfigFile, ListenerConfig, LoadBalanceConfig, ProtocolConfig,
-        RouteConfig, RuntimeConfig, UpstreamConfig,
+        ProxyPolicyConfig, RouteConfig, RuntimeConfig, UpstreamConfig,
     };
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::{Duration, sleep};
@@ -719,11 +725,13 @@ mod tests {
                 methods: vec![],
                 upstream: "api".into(),
                 filters: vec!["request-id".into()],
+                policy: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![EndpointConfig {
                     address: backend_addr.to_string(),
                     weight: 1,
@@ -822,11 +830,13 @@ mod tests {
                 methods: vec![],
                 upstream: "api".into(),
                 filters: vec![],
+                policy: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![EndpointConfig {
                     address: backend_addr.to_string(),
                     weight: 1,
@@ -906,11 +916,13 @@ mod tests {
                 methods: vec![],
                 upstream: "api".into(),
                 filters: vec![],
+                policy: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![EndpointConfig {
                     address: backend_addr.to_string(),
                     weight: 1,
@@ -1056,11 +1068,13 @@ mod tests {
                 methods: vec![],
                 upstream: "api".into(),
                 filters: vec![],
+                policy: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![
                     EndpointConfig {
                         address: dead_addr.to_string(),
@@ -1114,6 +1128,310 @@ mod tests {
         let text = String::from_utf8(response).expect("utf-8 response");
         assert!(text.starts_with("HTTP/1.1 200 OK"));
         assert!(text.ends_with("retried"));
+    }
+
+    #[tokio::test]
+    async fn upstream_policy_can_extend_runtime_retry_budget() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+        let reserved = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve dead port");
+        let dead_addr = reserved.local_addr().expect("dead addr");
+        drop(reserved);
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                .await
+                .expect("read backend request");
+            assert_eq!(request.path_for_route(), "/policy");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\npolicy",
+                )
+                .await
+                .expect("write backend response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                upstream_retry_attempts: 1,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: ProxyPolicyConfig::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: ProxyPolicyConfig {
+                    connect_timeout_ms: None,
+                    read_timeout_ms: None,
+                    retry_attempts: Some(2),
+                },
+                endpoints: vec![
+                    EndpointConfig {
+                        address: dead_addr.to_string(),
+                        weight: 1,
+                    },
+                    EndpointConfig {
+                        address: backend_addr.to_string(),
+                        weight: 1,
+                    },
+                ],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /policy HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task").expect("proxy request");
+        assert_eq!(outcome.retries, 1);
+        assert_eq!(outcome.response.status_code, 200);
+    }
+
+    #[tokio::test]
+    async fn route_policy_overrides_upstream_retry_budget() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+        let reserved = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve dead port");
+        let dead_addr = reserved.local_addr().expect("dead addr");
+        drop(reserved);
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("write backend response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                upstream_retry_attempts: 3,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: ProxyPolicyConfig {
+                    connect_timeout_ms: None,
+                    read_timeout_ms: None,
+                    retry_attempts: Some(1),
+                },
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: ProxyPolicyConfig {
+                    connect_timeout_ms: None,
+                    read_timeout_ms: None,
+                    retry_attempts: Some(2),
+                },
+                endpoints: vec![
+                    EndpointConfig {
+                        address: dead_addr.to_string(),
+                        weight: 1,
+                    },
+                    EndpointConfig {
+                        address: backend_addr.to_string(),
+                        weight: 1,
+                    },
+                ],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /policy HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task");
+        match outcome {
+            Err(ProxyConnectionError {
+                error: GatewayError::Io(message),
+                retries,
+                ..
+            }) => {
+                assert!(message.contains("connect upstream"));
+                assert_eq!(retries, 1);
+            }
+            other => panic!("expected route retry override to stop retries, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn route_policy_overrides_upstream_read_timeout() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            sleep(Duration::from_millis(80)).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("write backend response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                upstream_read_timeout_ms: 500,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: ProxyPolicyConfig {
+                    connect_timeout_ms: None,
+                    read_timeout_ms: Some(40),
+                    retry_attempts: None,
+                },
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: ProxyPolicyConfig {
+                    connect_timeout_ms: None,
+                    read_timeout_ms: Some(200),
+                    retry_attempts: None,
+                },
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /slow-policy HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task");
+        match outcome {
+            Err(ProxyConnectionError {
+                error: GatewayError::Io(message),
+                ..
+            }) => {
+                assert!(message.contains("timed out"));
+            }
+            other => panic!("expected route read timeout override, got {:?}", other),
+        }
     }
 
     #[test]

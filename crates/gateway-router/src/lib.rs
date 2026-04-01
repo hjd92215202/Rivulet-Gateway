@@ -29,6 +29,9 @@ impl Router {
             route_name: route.name.clone(),
             upstream_name: route.upstream.clone(),
             filter_names: route.filters.clone(),
+            // 璺敱鍛戒腑鏃跺氨鎶婅矾鐢卞眰鐨勭瓥鐣ユ惡甯︿笅鍘伙紝
+            // 杩欐牱浠ｇ悊涓婚摼璺笉鐢ㄥ啀鍥炲埌閰嶇疆鏁存爲閲嶆柊鏌ユ壘銆?
+            proxy_policy: route.policy.to_overrides(),
         })
     }
 }
@@ -91,6 +94,7 @@ mod tests {
                     methods: vec![gateway_config::HttpMethodConfig::POST],
                     upstream: "api-cluster".into(),
                     filters: vec![],
+                    policy: Default::default(),
                 },
                 RouteConfig {
                     name: "api".into(),
@@ -100,12 +104,18 @@ mod tests {
                     methods: vec![],
                     upstream: "api-cluster".into(),
                     filters: vec!["request-id".into()],
+                    policy: gateway_config::ProxyPolicyConfig {
+                        connect_timeout_ms: None,
+                        read_timeout_ms: Some(1500),
+                        retry_attempts: Some(3),
+                    },
                 },
             ],
             upstreams: vec![UpstreamConfig {
                 name: "api-cluster".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![gateway_config::EndpointConfig {
                     address: "127.0.0.1:9000".into(),
                     weight: 1,
@@ -124,6 +134,7 @@ mod tests {
         let matched = router.resolve(&request).expect("route should match");
         assert_eq!(matched.route_name, "api");
         assert_eq!(matched.upstream_name, "api-cluster");
+        assert_eq!(matched.proxy_policy.upstream_retry_attempts, Some(3));
     }
 
     #[test]

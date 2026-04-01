@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use gateway_config::{GatewayConfigFile, HealthCheckConfig, LoadBalanceConfig};
-use gateway_types::{GatewayError, Result, UpstreamEndpoint};
+use gateway_types::{GatewayError, ProxyPolicyOverrides, Result, UpstreamEndpoint};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -42,6 +42,7 @@ impl UpstreamRegistry {
                         name: cluster.name.clone(),
                         strategy: cluster.load_balance,
                         health_check: cluster.health_check.clone(),
+                        proxy_policy: cluster.policy.to_overrides(),
                         endpoints,
                         cursor: AtomicUsize::new(0),
                     }),
@@ -76,6 +77,7 @@ pub struct UpstreamCluster {
     pub strategy: LoadBalanceConfig,
     /// 可选健康检查配置。
     pub health_check: Option<HealthCheckConfig>,
+    proxy_policy: ProxyPolicyOverrides,
     /// 这个集群下的所有 endpoint 状态。
     endpoints: Vec<Arc<EndpointState>>,
     /// 轮询游标。
@@ -121,6 +123,11 @@ impl UpstreamCluster {
     pub fn endpoints(&self) -> &[Arc<EndpointState>] {
         // 主要给健康检查循环只读遍历使用。
         &self.endpoints
+    }
+
+    pub fn proxy_policy(&self) -> &ProxyPolicyOverrides {
+        // 绛栫暐鍦ㄦ瀯閫犻泦缇ゆ椂灏卞凡缁忓喕缁擄紝杩欓噷鍙毚闇插彧璇荤殑瑙嗗浘銆?
+        &self.proxy_policy
     }
 
     pub fn passive_success_threshold(&self) -> u32 {
@@ -245,6 +252,7 @@ mod tests {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![
                     EndpointConfig {
                         address: "127.0.0.1:9000".into(),
@@ -286,6 +294,7 @@ mod tests {
                     healthy_threshold: 1,
                     unhealthy_threshold: 1,
                 }),
+                policy: Default::default(),
                 endpoints: vec![
                     EndpointConfig {
                         address: "127.0.0.1:9000".into(),

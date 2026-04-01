@@ -315,11 +315,13 @@ mod tests {
                 methods: vec![],
                 upstream: "api".into(),
                 filters: vec![],
+                policy: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![EndpointConfig {
                     address: backend_addr.to_string(),
                     weight: 1,
@@ -376,11 +378,13 @@ mod tests {
                 methods: vec![],
                 upstream: "api".into(),
                 filters: vec![],
+                policy: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![EndpointConfig {
                     address: "127.0.0.1:9000".into(),
                     weight: 1,
@@ -435,11 +439,13 @@ mod tests {
                 methods: vec![],
                 upstream: "api".into(),
                 filters: vec![],
+                policy: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![EndpointConfig {
                     address: "127.0.0.1:9000".into(),
                     weight: 1,
@@ -502,11 +508,13 @@ mod tests {
                 methods: vec![],
                 upstream: "api".into(),
                 filters: vec![],
+                policy: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
                 health_check: None,
+                policy: Default::default(),
                 endpoints: vec![EndpointConfig {
                     address: backend_addr.to_string(),
                     weight: 1,

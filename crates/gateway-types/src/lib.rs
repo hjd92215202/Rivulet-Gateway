@@ -1,6 +1,5 @@
 //! `gateway-types` 只放跨模块共享的稳定类型。
 //! 这里的结构尽量保持简单，避免把实现细节泄漏到所有 crate。
-
 use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -81,7 +80,7 @@ impl TryFrom<&str> for HttpMethod {
     type Error = GatewayError;
 
     fn try_from(value: &str) -> Result<Self> {
-        // 这里故意只接受已经明确支持的方法，避免“先放过去再说”带来语义歧义。
+        // 这里只接受已经明确支持的方法，避免“先放过去再说”带来语义歧义。
         match value {
             "GET" => Ok(Self::Get),
             "POST" => Ok(Self::Post),
@@ -113,7 +112,7 @@ pub struct RequestContext {
 
 impl RequestContext {
     /// `RequestContext` 是内核在请求生命周期内共享的最小上下文。
-    /// 这里故意不直接塞入原始 socket 或大块报文，避免后面耦合到传输层。
+    /// 这里刻意不直接塞入原始 socket 或大块报文，避免后面耦合到传输层。
     pub fn new(
         listener: impl Into<String>,
         host: impl Into<String>,
@@ -165,6 +164,8 @@ pub struct RouteMatch {
     pub upstream_name: String,
     /// 这次请求应该经过哪些过滤器。
     pub filter_names: Vec<String>,
+    /// 路由层对上游超时和重试的可选覆盖策略。
+    pub proxy_policy: ProxyPolicyOverrides,
 }
 
 /// 上游节点描述只保留“如何连过去”所需的最小字段。
@@ -174,6 +175,68 @@ pub struct UpstreamEndpoint {
     pub address: String,
     /// 权重字段先保留，当前 round robin 还未消费它。
     pub weight: u16,
+}
+
+/// 路由和 upstream 层都只做“可选覆盖”，
+/// 没有明确写出来的字段会自然回落到更低层的默认值。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProxyPolicyOverrides {
+    /// 如果有值，就覆盖上游 TCP 建连超时。
+    pub upstream_connect_timeout: Option<Duration>,
+    /// 如果有值，就覆盖上游响应读取超时。
+    pub upstream_read_timeout: Option<Duration>,
+    /// 如果有值，就覆盖单次请求可用的最大尝试次数。
+    pub upstream_retry_attempts: Option<usize>,
+}
+
+impl ProxyPolicyOverrides {
+    /// 当前这层的显式配置优先级最高，只有没写的字段才回落到 fallback。
+    pub fn or_else(&self, fallback: &Self) -> Self {
+        Self {
+            // connect timeout 按最近一层有效值生效。
+            upstream_connect_timeout: self
+                .upstream_connect_timeout
+                .or(fallback.upstream_connect_timeout),
+            // read timeout 与其他字段保持同一优先级语义。
+            upstream_read_timeout: self
+                .upstream_read_timeout
+                .or(fallback.upstream_read_timeout),
+            // retry attempts 也按同一规则合成，避免局部特例。
+            upstream_retry_attempts: self
+                .upstream_retry_attempts
+                .or(fallback.upstream_retry_attempts),
+        }
+    }
+
+    /// 把可选覆盖解析成代理真正执行时用的确定策略。
+    pub fn resolve(&self, runtime: &RuntimeSettings) -> ResolvedProxyPolicy {
+        let runtime_policy = runtime.proxy_policy();
+        ResolvedProxyPolicy {
+            // 如果这层没写 connect timeout，就回落到全局默认。
+            upstream_connect_timeout: self
+                .upstream_connect_timeout
+                .unwrap_or(runtime_policy.upstream_connect_timeout),
+            // 如果这层没写 read timeout，就回落到全局默认。
+            upstream_read_timeout: self
+                .upstream_read_timeout
+                .unwrap_or(runtime_policy.upstream_read_timeout),
+            // 如果这层没写 retry attempts，就回落到全局默认。
+            upstream_retry_attempts: self
+                .upstream_retry_attempts
+                .unwrap_or(runtime_policy.upstream_retry_attempts),
+        }
+    }
+}
+
+/// 代理执行路径只认这个“已经解析好的最终策略”。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResolvedProxyPolicy {
+    /// 最终生效的 connect timeout。
+    pub upstream_connect_timeout: Duration,
+    /// 最终生效的 read timeout。
+    pub upstream_read_timeout: Duration,
+    /// 最终生效的 retry attempts。
+    pub upstream_retry_attempts: usize,
 }
 
 /// 运行时设置在启动后视为只读快照。
@@ -216,6 +279,20 @@ impl Default for RuntimeSettings {
     }
 }
 
+impl RuntimeSettings {
+    /// 把全局运行时设置转成代理可直接使用的最终策略。
+    pub fn proxy_policy(&self) -> ResolvedProxyPolicy {
+        ResolvedProxyPolicy {
+            // connect timeout 直接来自运行时的全局配置。
+            upstream_connect_timeout: self.upstream_connect_timeout,
+            // read timeout 直接来自运行时的全局配置。
+            upstream_read_timeout: self.upstream_read_timeout,
+            // retry attempts 在进入这里前已经做过最小保底。
+            upstream_retry_attempts: self.upstream_retry_attempts,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +318,26 @@ mod tests {
         assert!(settings.upstream_retry_attempts >= 1);
         assert!(settings.max_request_line_bytes >= 256);
         assert!(settings.max_request_headers >= 1);
+    }
+
+    #[test]
+    fn proxy_policy_overrides_prefer_nearest_scope() {
+        let runtime = RuntimeSettings::default();
+        let upstream = ProxyPolicyOverrides {
+            upstream_connect_timeout: Some(Duration::from_secs(2)),
+            upstream_read_timeout: Some(Duration::from_secs(4)),
+            upstream_retry_attempts: Some(3),
+        };
+        let route = ProxyPolicyOverrides {
+            upstream_connect_timeout: Some(Duration::from_secs(1)),
+            upstream_read_timeout: None,
+            upstream_retry_attempts: Some(1),
+        };
+
+        let resolved = route.or_else(&upstream).resolve(&runtime);
+
+        assert_eq!(resolved.upstream_connect_timeout, Duration::from_secs(1));
+        assert_eq!(resolved.upstream_read_timeout, Duration::from_secs(4));
+        assert_eq!(resolved.upstream_retry_attempts, 1);
     }
 }
