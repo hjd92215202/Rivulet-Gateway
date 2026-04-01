@@ -38,6 +38,7 @@ name = "gateway-filters"
 version = "0.1.0"
 dependencies = [
  "gateway-types",
+ "tokio",
 ]
 
 [[package]]

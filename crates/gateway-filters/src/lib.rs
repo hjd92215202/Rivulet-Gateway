@@ -91,3 +91,44 @@ impl FilterRegistry {
             .map(|filter| filter.as_ref())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gateway_types::{HttpMethod, RequestContext, ResponseContext};
+
+    #[tokio::test]
+    async fn request_id_filter_populates_missing_request_id() {
+        let registry = FilterRegistry::with_defaults();
+        let mut request = RequestContext::new("edge", "example.test", "/v1/hello", HttpMethod::Get);
+
+        registry
+            .run_before(&["request-id".into()], &mut request)
+            .await
+            .expect("filter should run");
+
+        assert_eq!(
+            request.request_id.as_deref(),
+            Some("edge:example.test:/v1/hello")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_filter_is_ignored() {
+        let registry = FilterRegistry::with_defaults();
+        let mut request = RequestContext::new("edge", "example.test", "/", HttpMethod::Get);
+        let mut response = ResponseContext::new(200);
+
+        registry
+            .run_before(&["missing-filter".into()], &mut request)
+            .await
+            .expect("missing filter should be ignored");
+        registry
+            .run_after(&["missing-filter".into()], &mut response)
+            .await
+            .expect("missing filter should be ignored");
+
+        assert!(request.request_id.is_none());
+        assert_eq!(response.status_code, 200);
+    }
+}

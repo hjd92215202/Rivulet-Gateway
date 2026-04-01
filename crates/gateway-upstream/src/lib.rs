@@ -297,4 +297,24 @@ mod tests {
 
         accept_task.abort();
     }
+
+    #[test]
+    fn passive_thresholds_delay_state_changes() {
+        let endpoint = EndpointState::new(UpstreamEndpoint {
+            address: "127.0.0.1:9000".into(),
+            weight: 1,
+        });
+
+        endpoint.record_failure(2);
+        assert!(endpoint.is_healthy());
+
+        endpoint.record_failure(2);
+        assert!(!endpoint.is_healthy());
+
+        endpoint.record_success(2);
+        assert!(!endpoint.is_healthy());
+
+        endpoint.record_success(2);
+        assert!(endpoint.is_healthy());
+    }
 }

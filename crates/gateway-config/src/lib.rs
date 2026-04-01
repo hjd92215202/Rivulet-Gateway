@@ -270,3 +270,120 @@ fn default_health_check_healthy_threshold() -> u32 {
 fn default_health_check_unhealthy_threshold() -> u32 {
     2
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn valid_config() -> GatewayConfigFile {
+        GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:8080".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![HttpMethodConfig::GET],
+                upstream: "api".into(),
+                filters: vec!["request-id".into()],
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: Some(HealthCheckConfig {
+                    interval_ms: 3_000,
+                    timeout_ms: 1_000,
+                    healthy_threshold: 2,
+                    unhealthy_threshold: 2,
+                }),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn validate_rejects_missing_listener() {
+        let mut config = valid_config();
+        config.listeners.clear();
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => {
+                assert!(message.contains("at least one listener"))
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unknown_route_upstream() {
+        let mut config = valid_config();
+        config.routes[0].upstream = "missing".into();
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("unknown upstream")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn runtime_settings_clamps_retry_attempts() {
+        let mut config = valid_config();
+        config.runtime.upstream_retry_attempts = 0;
+
+        let settings = config.runtime_settings();
+        assert_eq!(settings.upstream_retry_attempts, 1);
+    }
+
+    #[test]
+    fn load_from_file_applies_defaults() {
+        let file_name = format!(
+            "gateway-config-test-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+
+        fs::write(
+            &path,
+            r#"
+[[listeners]]
+name = "edge"
+address = "127.0.0.1:8080"
+protocol = "http1"
+
+[[upstreams]]
+name = "api"
+load_balance = "round_robin"
+
+[[upstreams.endpoints]]
+address = "127.0.0.1:9000"
+
+[[routes]]
+name = "default"
+listener = "edge"
+upstream = "api"
+"#,
+        )
+        .expect("write config file");
+
+        let loaded = GatewayConfigFile::load_from_file(&path).expect("config should load");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(loaded.runtime.worker_threads, 4);
+        assert_eq!(loaded.runtime.upstream_retry_attempts, 2);
+        assert_eq!(loaded.upstreams[0].endpoints[0].weight, 1);
+    }
+}

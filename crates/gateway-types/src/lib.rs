@@ -156,3 +156,29 @@ impl Default for RuntimeSettings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_method_try_from_known_value() {
+        let method = HttpMethod::try_from("POST").expect("method should parse");
+        assert_eq!(method, HttpMethod::Post);
+    }
+
+    #[test]
+    fn http_method_try_from_unknown_value_returns_error() {
+        let error = HttpMethod::try_from("TRACE").expect_err("trace should be unsupported");
+        match error {
+            GatewayError::Unsupported(message) => assert!(message.contains("TRACE")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn runtime_settings_default_retry_attempts_are_positive() {
+        let settings = RuntimeSettings::default();
+        assert!(settings.upstream_retry_attempts >= 1);
+    }
+}

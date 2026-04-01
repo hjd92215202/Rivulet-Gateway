@@ -271,6 +271,66 @@ mod tests {
         server.await.expect("server task").expect("gateway ok");
     }
 
+    #[tokio::test]
+    async fn run_until_returns_404_for_unmatched_route() {
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/ok".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(250)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(40)).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", listener_port))
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /missing HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 404 Not Found"));
+
+        server.await.expect("server task").expect("gateway ok");
+    }
+
     fn reserve_port() -> u16 {
         std::net::TcpListener::bind("127.0.0.1:0")
             .expect("reserve port")

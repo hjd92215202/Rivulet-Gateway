@@ -67,24 +67,34 @@ mod tests {
         UpstreamConfig,
     };
 
-    #[test]
-    fn resolves_matching_route() {
-        let config = GatewayConfigFile {
+    fn router_config() -> GatewayConfigFile {
+        GatewayConfigFile {
             runtime: Default::default(),
             listeners: vec![ListenerConfig {
                 name: "edge".into(),
                 address: "0.0.0.0:8080".into(),
                 protocol: ProtocolConfig::Http1,
             }],
-            routes: vec![RouteConfig {
-                name: "api".into(),
-                listener: "edge".into(),
-                hosts: vec!["api.example.com".into()],
-                path_prefixes: vec!["/v1/".into()],
-                methods: vec![],
-                upstream: "api-cluster".into(),
-                filters: vec!["request-id".into()],
-            }],
+            routes: vec![
+                RouteConfig {
+                    name: "write-api".into(),
+                    listener: "edge".into(),
+                    hosts: vec!["api.example.com".into()],
+                    path_prefixes: vec!["/v1/items".into()],
+                    methods: vec![gateway_config::HttpMethodConfig::POST],
+                    upstream: "api-cluster".into(),
+                    filters: vec![],
+                },
+                RouteConfig {
+                    name: "api".into(),
+                    listener: "edge".into(),
+                    hosts: vec!["api.example.com".into()],
+                    path_prefixes: vec!["/v1/".into()],
+                    methods: vec![],
+                    upstream: "api-cluster".into(),
+                    filters: vec!["request-id".into()],
+                },
+            ],
             upstreams: vec![UpstreamConfig {
                 name: "api-cluster".into(),
                 load_balance: LoadBalanceConfig::RoundRobin,
@@ -94,7 +104,12 @@ mod tests {
                     weight: 1,
                 }],
             }],
-        };
+        }
+    }
+
+    #[test]
+    fn resolves_matching_route() {
+        let config = router_config();
 
         let router = Router::from_config(&config);
         let request = RequestContext::new("edge", "api.example.com", "/v1/users", HttpMethod::Get);
@@ -102,5 +117,40 @@ mod tests {
         let matched = router.resolve(&request).expect("route should match");
         assert_eq!(matched.route_name, "api");
         assert_eq!(matched.upstream_name, "api-cluster");
+    }
+
+    #[test]
+    fn resolve_rejects_request_with_wrong_listener() {
+        let config = router_config();
+        let router = Router::from_config(&config);
+        let request =
+            RequestContext::new("internal", "api.example.com", "/v1/users", HttpMethod::Get);
+
+        let error = router
+            .resolve(&request)
+            .expect_err("route should not match");
+        assert!(matches!(error, GatewayError::RouteNotMatched));
+    }
+
+    #[test]
+    fn resolve_rejects_request_with_wrong_host() {
+        let config = router_config();
+        let router = Router::from_config(&config);
+        let request = RequestContext::new("edge", "www.example.com", "/v1/users", HttpMethod::Get);
+
+        let error = router
+            .resolve(&request)
+            .expect_err("route should not match");
+        assert!(matches!(error, GatewayError::RouteNotMatched));
+    }
+
+    #[test]
+    fn resolve_honors_method_specific_route() {
+        let config = router_config();
+        let router = Router::from_config(&config);
+        let request = RequestContext::new("edge", "api.example.com", "/v1/items", HttpMethod::Post);
+
+        let matched = router.resolve(&request).expect("method route should match");
+        assert_eq!(matched.route_name, "write-api");
     }
 }

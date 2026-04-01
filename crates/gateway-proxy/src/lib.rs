@@ -291,6 +291,15 @@ impl HttpRequest {
             body.truncate(content_length);
         }
 
+        if headers
+            .iter()
+            .all(|(name, value)| !name.eq_ignore_ascii_case("host") || value.is_empty())
+        {
+            return Err(GatewayError::Protocol(
+                "host header is required for http/1.1 requests".into(),
+            ));
+        }
+
         Ok(Self {
             method,
             target,
@@ -332,6 +341,7 @@ impl HttpRequest {
 
         let mut has_host = false;
         let mut has_x_forwarded_for = false;
+        let mut has_content_length = false;
 
         for (name, value) in &self.headers {
             if is_hop_by_hop_header(name) {
@@ -342,6 +352,9 @@ impl HttpRequest {
             }
             if name.eq_ignore_ascii_case("x-forwarded-for") {
                 has_x_forwarded_for = true;
+            }
+            if name.eq_ignore_ascii_case("content-length") {
+                has_content_length = true;
             }
             request_bytes.extend_from_slice(format!("{}: {}\r\n", name, value).as_bytes());
         }
@@ -359,8 +372,12 @@ impl HttpRequest {
         }
 
         request_bytes.extend_from_slice(b"Connection: close\r\n");
-        request_bytes
-            .extend_from_slice(format!("Content-Length: {}\r\n\r\n", self.body.len()).as_bytes());
+        if !has_content_length {
+            request_bytes.extend_from_slice(
+                format!("Content-Length: {}\r\n", self.body.len()).as_bytes(),
+            );
+        }
+        request_bytes.extend_from_slice(b"\r\n");
         request_bytes.extend_from_slice(&self.body);
 
         upstream
@@ -382,7 +399,19 @@ fn parse_content_length(headers: &[(String, String)]) -> Result<usize> {
             let parsed = value.parse::<usize>().map_err(|_| {
                 GatewayError::Protocol(format!("invalid content-length header value {}", value))
             })?;
-            content_length = Some(parsed);
+            match content_length {
+                Some(existing) if existing != parsed => {
+                    return Err(GatewayError::Protocol(
+                        "conflicting content-length headers are not allowed".into(),
+                    ));
+                }
+                Some(_) => {
+                    return Err(GatewayError::Protocol(
+                        "duplicate content-length headers are not allowed".into(),
+                    ));
+                }
+                None => content_length = Some(parsed),
+            }
         }
     }
     Ok(content_length.unwrap_or(0))
@@ -545,6 +574,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forwards_x_forwarded_for_and_drops_hop_by_hop_headers() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let mut raw = Vec::new();
+            let mut buf = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buf).await.expect("read backend request");
+                if read == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..read]);
+                if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let text = String::from_utf8(raw).expect("request utf-8");
+            assert!(text.contains("X-Forwarded-For: 127.0.0.1"));
+            assert!(text.contains("Host: example.test"));
+            assert!(!text.contains("Connection: keep-alive"));
+            assert!(!text.contains("Proxy-Connection"));
+
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("write backend response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+                .expect("proxy request");
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /hello HTTP/1.1\r\nHost: example.test\r\nConnection: keep-alive\r\nProxy-Connection: keep-alive\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        server.await.expect("gateway task");
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+    }
+
+    #[tokio::test]
     async fn returns_timeout_when_upstream_response_stalls() {
         let backend = TcpListener::bind("127.0.0.1:0")
             .await
@@ -619,6 +750,62 @@ mod tests {
                 assert!(message.contains("timed out"));
             }
             other => panic!("expected upstream timeout error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_duplicate_content_length_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, Duration::from_secs(1)).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\na",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Protocol(message)) => {
+                assert!(message.contains("duplicate content-length"));
+            }
+            other => panic!("expected duplicate content-length error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_host_header() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, Duration::from_secs(1)).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(b"GET /hello HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Protocol(message)) => {
+                assert!(message.contains("host header"));
+            }
+            other => panic!("expected host header error, got {:?}", other),
         }
     }
 
@@ -722,5 +909,12 @@ mod tests {
         let text = String::from_utf8(response).expect("utf-8 response");
         assert!(text.starts_with("HTTP/1.1 200 OK"));
         assert!(text.ends_with("retried"));
+    }
+
+    #[test]
+    fn error_response_maps_route_not_found_to_404() {
+        let bytes = error_response(&GatewayError::RouteNotMatched);
+        let text = String::from_utf8(bytes).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 404 Not Found"));
     }
 }
