@@ -63,6 +63,7 @@ CI/CD:
 - workflow architecture: `docs/WORKFLOW-ARCHITECTURE.md`
 - Linux first-test checklist: `docs/LINUX-SERVER-FIRST-TEST.md`
 - Linux baseline benchmark: `docs/LINUX-BASELINE-BENCHMARK.md`
+- Linux release automation: `docs/LINUX-RELEASE-AUTOMATION.md`
 - packaging guide: `packaging/README.md`
 
 Project policy docs:
@@ -139,6 +140,7 @@ CI/CD 入口：
 - 工作流架构图：`docs/WORKFLOW-ARCHITECTURE.md`
 - Linux 首测清单：`docs/LINUX-SERVER-FIRST-TEST.md`
 - Linux 基线压测：`docs/LINUX-BASELINE-BENCHMARK.md`
+- Linux 自动化验证：`docs/LINUX-RELEASE-AUTOMATION.md`
 - 打包说明：`packaging/README.md`
 
 项目治理文档：
