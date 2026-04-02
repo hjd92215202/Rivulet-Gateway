@@ -3,6 +3,7 @@
 //! 2. 生成结构化 access log
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{env, sync::OnceLock};
 
 use gateway_types::{RequestContext, ResponseContext};
 
@@ -169,7 +170,23 @@ impl AccessLogRecord {
 }
 
 pub fn emit_access_log(record: &AccessLogRecord) {
+    // 压测场景下如果每个请求都直打 stdout，
+    // 日志系统本身会反过来成为主要瓶颈，所以这里提供一个显式关闭开关。
+    if !access_log_enabled() {
+        return;
+    }
     println!("{}", record.to_json_line());
+}
+
+fn access_log_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+
+    *ENABLED.get_or_init(|| {
+        !matches!(
+            env::var("GATEWAY_DISABLE_ACCESS_LOG"),
+            Ok(value) if value == "1" || value.eq_ignore_ascii_case("true")
+        )
+    })
 }
 
 fn json_string_or_null(value: Option<&str>) -> String {

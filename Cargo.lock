@@ -25,6 +25,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gateway-bench"
+version = "0.1.0"
+dependencies = [
+ "gateway-config",
+ "gateway-runtime",
+ "tokio",
+]
+
+[[package]]
 name = "gateway-config"
 version = "0.1.0"
 dependencies = [

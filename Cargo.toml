@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "cmd/gateway-bench",
     "cmd/gateway-main",
     "crates/gateway-config",
     "crates/gateway-filters",
