@@ -15,9 +15,21 @@ env:
   RIVULET_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
 
 jobs:
+  script-standards:
+    name: Release Script Standards
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check repository shell scripts
+        run: bash ./scripts/check-script-standards.sh
+
   package-linux-x86_64:
     name: Release Linux x86_64
     runs-on: ubuntu-24.04
+    needs:
+      - script-standards
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -63,6 +75,8 @@ jobs:
   package-windows-x86_64:
     name: Release Windows x86_64
     runs-on: windows-2022
+    needs:
+      - script-standards
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -98,6 +112,8 @@ jobs:
   package-linux-arm64:
     name: Release Linux arm64
     runs-on: ubuntu-24.04-arm
+    needs:
+      - script-standards
     steps:
       - name: Checkout
         uses: actions/checkout@v5

@@ -10,13 +10,13 @@ The repository script standard is:
 - Linux validation and benchmark scripts should support x86_64 and arm64.
 - Linux validation and benchmark scripts should auto-install missing dependencies when `apt-get`, `dnf`, or `yum` is available.
 - Shared bootstrap logic should live in reusable helpers instead of being duplicated.
-- CI enforces these rules before the main test matrix starts.
+- CI and release workflows enforce these rules before the main build and publish stages start.
 
 Shared helper:
 
 - `scripts/lib/linux-bootstrap.sh`
 
-CI enforcement entry:
+CI and release enforcement entry:
 
 - `scripts/check-script-standards.sh`
 
@@ -35,13 +35,13 @@ Current scripts aligned to this standard:
 - Linux 验证和压测脚本要同时支持 x86_64 和 arm64。
 - Linux 验证和压测脚本在系统存在 `apt-get`、`dnf` 或 `yum` 时，要自动安装缺失依赖。
 - 公共启动与依赖补齐逻辑要沉淀到可复用 helper，而不是在各脚本里重复实现。
-- CI 会在主测试矩阵开始前强制校验这些规则。
+- CI 和 release workflow 会在主测试、主构建、主发布流程开始前强制校验这些规则。
 
 共享 helper：
 
 - `scripts/lib/linux-bootstrap.sh`
 
-CI 校验入口：
+CI 与 release 校验入口：
 
 - `scripts/check-script-standards.sh`
 
