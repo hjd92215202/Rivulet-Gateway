@@ -21,6 +21,7 @@ Engineering standard from today onward:
 - Treat portability as a first-class requirement for Windows, Linux x86_64, and Linux arm64.
 - Keep project governance and distribution assets close to the source tree instead of hiding them in external tooling.
 - Make CI/CD and packaging reproducible through repository-owned GitHub Actions workflows.
+- Keep governance, security, and contributor policy explicit in-repo.
 
 Current kernel cut:
 
@@ -58,3 +59,11 @@ CI/CD:
 - Release workflow: `.github/workflows/release.yml`
 - Nightly benchmark workflow: `.github/workflows/nightly-benchmark.yml`
 - Packaging guide: `packaging/README.md`
+
+Project policy docs:
+
+- Contribution guide: `CONTRIBUTING.md`
+- Security policy: `SECURITY.md`
+- Governance: `GOVERNANCE.md`
+- Code of conduct: `CODE_OF_CONDUCT.md`
+- Production readiness report: `docs/PRODUCTION-READINESS.md`
