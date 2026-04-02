@@ -148,6 +148,9 @@ jobs:
       - package-windows-x86_64
       - package-linux-arm64
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Download release artifacts
         uses: actions/download-artifact@v5
         with:
