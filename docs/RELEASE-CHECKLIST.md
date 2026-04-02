@@ -2,13 +2,14 @@
 
 ## English
 
-Release target: `v0.1.0`
+Release target: `v<version>`
 
 ### Version
 
-- [ ] `Cargo.toml` workspace version is correct
-- [ ] release tag matches workspace version
-- [ ] no unintended local changes remain
+- [ ] `Cargo.toml` workspace version is correct for ongoing development.
+- [ ] The release tag is the intended public version.
+- [ ] Release asset filenames match the tag version.
+- [ ] No unintended local changes remain.
 
 ### Local Validation
 
@@ -22,8 +23,8 @@ Release target: `v0.1.0`
 - [ ] CI workflow is green on Linux x86_64
 - [ ] CI workflow is green on Windows x86_64
 - [ ] CI workflow is green on Linux arm64
-- [ ] package jobs upload expected artifacts
-- [ ] release workflow creates `SHA256SUMS.txt`
+- [ ] Package jobs upload expected artifacts
+- [ ] Release workflow creates `SHA256SUMS.txt`
 - [ ] GitHub Release page is created
 
 ### Release Assets
@@ -37,18 +38,19 @@ Release target: `v0.1.0`
 
 ### Post-Release Notes
 
-- [ ] document any known limits
-- [ ] record failed or skipped validations
-- [ ] update roadmap follow-up items
+- [ ] Document any known limits
+- [ ] Record failed or skipped validations
+- [ ] Update roadmap follow-up items
 
 ## 中文
 
-目标版本：`v0.1.0`
+目标版本：`v<version>`
 
 ### 版本检查
 
-- [ ] `Cargo.toml` 的 workspace version 正确
-- [ ] release tag 与 workspace version 一致
+- [ ] `Cargo.toml` 中的 workspace version 对开发主线仍然正确
+- [ ] release tag 就是本次要公开的版本号
+- [ ] release assets 文件名与 tag 版本一致
 - [ ] 没有意外的本地未提交改动
 
 ### 本地验证
@@ -63,7 +65,7 @@ Release target: `v0.1.0`
 - [ ] Linux x86_64 CI 通过
 - [ ] Windows x86_64 CI 通过
 - [ ] Linux arm64 CI 通过
-- [ ] 各 package job 上传了预期产物
+- [ ] package job 上传了预期产物
 - [ ] release workflow 生成了 `SHA256SUMS.txt`
 - [ ] GitHub Release 页面已创建
 
@@ -76,7 +78,7 @@ Release target: `v0.1.0`
 - [ ] Linux arm64 `.rpm`
 - [ ] `SHA256SUMS.txt`
 
-### 发版后记录
+### 发布后记录
 
 - [ ] 记录已知边界
 - [ ] 记录失败或跳过的验证

@@ -12,6 +12,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   GATEWAY_DISABLE_ACCESS_LOG: "1"
+  RIVULET_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
 
 jobs:
   package-linux-x86_64:
@@ -21,7 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Resolve workspace version
+      - name: Resolve release version
         id: version
         run: echo "value=$(bash ./scripts/get-version.sh)" >> "$GITHUB_OUTPUT"
 
@@ -66,7 +67,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Resolve workspace version
+      - name: Resolve release version
         id: version
         shell: powershell
         run: |
@@ -101,7 +102,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Resolve workspace version
+      - name: Resolve release version
         id: version
         run: echo "value=$(bash ./scripts/get-version.sh)" >> "$GITHUB_OUTPUT"
 
