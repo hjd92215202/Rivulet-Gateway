@@ -73,7 +73,7 @@ jobs:
       - name: Install rpm toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm
+          sudo apt-get install -y rpm cpio
 
       - name: Build release binary
         run: cargo build -p gateway-main --release --target x86_64-unknown-linux-gnu
@@ -90,11 +90,17 @@ jobs:
       - name: Validate tarball layout
         run: bash ./packaging/tests/validate-package.sh ./dist/x86_64-unknown-linux-gnu/rivulet-gateway-0.1.0.tar.gz
 
+      - name: Smoke test installed tarball layout
+        run: PORT=18084 bash ./packaging/tests/install-package.sh ./dist/x86_64-unknown-linux-gnu/rivulet-gateway-0.1.0.tar.gz
+
       - name: Build rpm
         run: bash ./scripts/package.sh --target x86_64-unknown-linux-gnu --format rpm --skip-build
 
       - name: Validate rpm layout
         run: bash ./packaging/tests/validate-package.sh "$(find ./dist/rpmbuild/x86_64-unknown-linux-gnu/RPMS -name '*.rpm' | head -n 1)"
+
+      - name: Smoke test installed rpm layout
+        run: PORT=18085 bash ./packaging/tests/install-package.sh "$(find ./dist/rpmbuild/x86_64-unknown-linux-gnu/RPMS -name '*.rpm' | head -n 1)"
 
       - name: Publish Linux artifacts
         uses: actions/upload-artifact@v4
