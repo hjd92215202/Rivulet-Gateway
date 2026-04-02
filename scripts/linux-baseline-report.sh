@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO_ROOT/scripts/lib/linux-bootstrap.sh"
+
 URL=""
 HOST_HEADER=""
 DURATION_SECS="15"
@@ -19,6 +22,11 @@ optional:
   --duration <secs>    duration of each wrk run, default: 15
   --out-dir <dir>      output directory, default: ./target/server-bench
   --label <name>       report label, default: baseline
+
+notes:
+  - supports Linux x86_64 and Linux arm64
+  - auto-installs curl and wrk when apt-get, dnf, or yum is available
+  - exits automatically after writing the report
 
 example:
   bash ./scripts/linux-baseline-report.sh \
@@ -68,15 +76,7 @@ if [[ -z "$URL" || -z "$HOST_HEADER" ]]; then
   exit 1
 fi
 
-if ! command -v wrk >/dev/null 2>&1; then
-  echo "wrk is required for this report script" >&2
-  exit 1
-fi
-
-if ! command -v curl >/dev/null 2>&1; then
-  echo "curl is required for this report script" >&2
-  exit 1
-fi
+ensure_linux_commands curl wrk
 
 if [[ -z "$OUT_DIR" ]]; then
   OUT_DIR="./target/server-bench"
@@ -88,6 +88,9 @@ RAW_DIR="$REPORT_ROOT/raw"
 REPORT_PATH="$REPORT_ROOT/report.md"
 
 mkdir -p "$RAW_DIR"
+
+print_stage "running linux baseline benchmark label=$LABEL"
+print_stage "target url=$URL host=$HOST_HEADER duration=${DURATION_SECS}s"
 
 request_status_line() {
   curl -sS -D - -o /dev/null -H "Host: $HOST_HEADER" "$URL" | head -n 1 | tr -d '\r'
@@ -130,7 +133,7 @@ run_case() {
   local duration_secs="$4"
   local raw_path="$RAW_DIR/$case_name.txt"
 
-  echo "running case=$case_name threads=$threads connections=$connections duration=${duration_secs}s"
+  print_stage "running case=$case_name threads=$threads connections=$connections duration=${duration_secs}s"
   wrk --latency -t"$threads" -c"$connections" -d"${duration_secs}s" -H "Host: $HOST_HEADER" "$URL" >"$raw_path"
 
   local req_per_sec
@@ -246,3 +249,4 @@ $(cat "$TOP_PATH")
 EOF
 
 echo "report: $REPORT_PATH"
+print_stage "linux baseline benchmark completed"

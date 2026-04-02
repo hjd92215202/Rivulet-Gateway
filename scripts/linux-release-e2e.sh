@@ -2,8 +2,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO_ROOT/scripts/lib/linux-bootstrap.sh"
 
-TAG="v0.1.6"
+TAG=""
 REPO_SLUG="hjd92215202/Rivulet-Gateway"
 HOST_HEADER="localhost"
 GATEWAY_PORT="18080"
@@ -21,7 +22,7 @@ required:
   --host <host>            host header matched by the generated route
 
 optional:
-  --tag <tag>              release tag, default: v0.1.6
+  --tag <tag>              release tag, default: current git tag or v0.1.6 fallback
   --repo <owner/name>      github repository slug, default: hjd92215202/Rivulet-Gateway
   --gateway-port <port>    gateway listen port, default: 18080
   --backend-port <port>    fixture backend port, default: 19000
@@ -30,12 +31,32 @@ optional:
   --label <label>          report label, default: linux-e2e
   --work-dir <dir>         working directory, default: ./target/linux-release-e2e/<timestamp>-<label>
 
+notes:
+  - supports Linux x86_64 and Linux arm64
+  - auto-installs runtime dependencies when apt-get, dnf, or yum is available
+  - performs healthy-path, unmatched-host, and backend-down checks automatically
+  - exits automatically after reports are written
+
 example:
   bash ./scripts/linux-release-e2e.sh \
     --host llmtamer.com:8080 \
-    --tag v0.1.6 \
+    --tag v0.1.7 \
     --label llmtamer-e2e
 EOF
+}
+
+resolve_default_tag() {
+  local exact_tag=""
+
+  if command -v git >/dev/null 2>&1; then
+    exact_tag="$(git -C "$REPO_ROOT" describe --tags --exact-match 2>/dev/null || true)"
+    if [[ -n "$exact_tag" ]]; then
+      printf '%s\n' "$exact_tag"
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "v0.1.6"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -93,35 +114,13 @@ if [[ -z "$HOST_HEADER" ]]; then
   exit 1
 fi
 
-require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "required command not found: $1" >&2
-    exit 1
-  fi
-}
+if [[ -z "$TAG" ]]; then
+  TAG="$(resolve_default_tag)"
+fi
 
-require_cmd curl
-require_cmd tar
-require_cmd sha256sum
-require_cmd python3
-require_cmd wrk
+ensure_linux_commands curl tar sha256sum python3 wrk
 
-detect_arch_suffix() {
-  case "$(uname -m)" in
-    x86_64)
-      echo "linux-x86_64"
-      ;;
-    aarch64|arm64)
-      echo "linux-arm64"
-      ;;
-    *)
-      echo "unsupported architecture: $(uname -m)" >&2
-      exit 1
-      ;;
-  esac
-}
-
-ASSET_ARCH_SUFFIX="$(detect_arch_suffix)"
+ASSET_ARCH_SUFFIX="$(detect_linux_asset_arch)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 if [[ -z "$WORK_DIR" ]]; then
   WORK_DIR="$REPO_ROOT/target/linux-release-e2e/$TIMESTAMP-$LABEL"
@@ -153,7 +152,7 @@ trap cleanup EXIT
 
 release_json_path="$DOWNLOAD_DIR/release.json"
 release_api_url="https://api.github.com/repos/$REPO_SLUG/releases/tags/$TAG"
-echo "resolving release metadata for tag=$TAG repo=$REPO_SLUG"
+print_stage "resolving release metadata for tag=$TAG repo=$REPO_SLUG"
 curl -fsSL "$release_api_url" -o "$release_json_path"
 
 choose_asset_url() {
@@ -180,18 +179,18 @@ TARBALL_URL="$(choose_asset_url "-${ASSET_ARCH_SUFFIX}.tar.gz")"
 SHA_URL="$(choose_asset_url "SHA256SUMS.txt")"
 TARBALL_NAME="$(basename "$TARBALL_URL")"
 
-echo "downloading tarball=$TARBALL_NAME"
+print_stage "downloading tarball=$TARBALL_NAME"
 curl -fL "$TARBALL_URL" -o "$DOWNLOAD_DIR/$TARBALL_NAME"
-echo "downloading checksum manifest"
+print_stage "downloading checksum manifest"
 curl -fL "$SHA_URL" -o "$DOWNLOAD_DIR/SHA256SUMS.txt"
 
-echo "verifying release checksum"
+print_stage "verifying release checksum"
 (
   cd "$DOWNLOAD_DIR"
   grep " ${TARBALL_NAME}$" SHA256SUMS.txt | sha256sum -c -
 )
 
-echo "extracting package archive"
+print_stage "extracting package archive"
 tar -xzf "$DOWNLOAD_DIR/$TARBALL_NAME" -C "$EXTRACT_DIR"
 PACKAGE_ROOT="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 if [[ -z "$PACKAGE_ROOT" ]]; then
@@ -240,17 +239,17 @@ upstream = "fixture-backend"
 filters = ["request-id"]
 EOF
 
+print_stage "starting bundled fixture backend"
 python3 "$REPO_ROOT/scripts/fixture-backend.py" \
   --bind 127.0.0.1 \
   --port "$BACKEND_PORT" \
   --default-bytes 1024 \
   >"$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID="$!"
-echo "started bundled backend pid=$BACKEND_PID port=$BACKEND_PORT"
 
+print_stage "starting packaged gateway"
 "$PACKAGE_ROOT/usr/bin/gateway" "$GATEWAY_CONFIG_PATH" >"$LOG_DIR/gateway.log" 2>&1 &
 GATEWAY_PID="$!"
-echo "started packaged gateway pid=$GATEWAY_PID port=$GATEWAY_PORT"
 
 wait_for_status() {
   local expected="$1"
@@ -278,12 +277,12 @@ wait_for_status() {
 VALID_PATH="$BENCH_PATH"
 WRONG_HOST="invalid.example.test"
 
-echo "validating healthy route returns 200"
+print_stage "validating healthy route returns 200"
 PRECHECK_STATUS="$(wait_for_status "200" "$HOST_HEADER" "$VALID_PATH")"
-echo "validating unmatched host returns 404"
+print_stage "validating unmatched host returns 404"
 WRONG_HOST_STATUS="$(wait_for_status "404" "$WRONG_HOST" "$VALID_PATH" 5 0.2 2 || true)"
 
-echo "running baseline benchmark matrix"
+print_stage "running baseline benchmark matrix"
 bash "$REPO_ROOT/scripts/linux-baseline-report.sh" \
   --url "http://127.0.0.1:${GATEWAY_PORT}${BENCH_PATH}" \
   --host "$HOST_HEADER" \
@@ -293,15 +292,15 @@ bash "$REPO_ROOT/scripts/linux-baseline-report.sh" \
 
 BENCH_REPORT_PATH="$(find "$REPORT_DIR" -name report.md | sort | tail -n 1)"
 
-echo "stopping bundled backend to verify degraded-path 502 behavior"
+print_stage "stopping bundled backend to verify degraded-path 502 behavior"
 kill "$BACKEND_PID" >/dev/null 2>&1 || true
 wait "$BACKEND_PID" >/dev/null 2>&1 || true
 BACKEND_PID=""
 
-echo "validating backend-down response returns 502"
+print_stage "validating backend-down response returns 502"
 BACKEND_DOWN_STATUS="$(wait_for_status "502" "$HOST_HEADER" "$VALID_PATH" 3 0.3 8 || true)"
 
-echo "writing summary report"
+print_stage "writing summary report"
 cat >"$SUMMARY_PATH" <<EOF
 # Linux Release E2E Summary
 
@@ -344,3 +343,5 @@ EOF
 
 echo "summary: $SUMMARY_PATH"
 echo "benchmark report: $BENCH_REPORT_PATH"
+print_stage "linux release e2e completed"
+exit 0

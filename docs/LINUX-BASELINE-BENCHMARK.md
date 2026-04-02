@@ -22,13 +22,15 @@ It also stores raw `wrk` output and environment snapshots in the same directory.
 
 Before running:
 
-- make sure `wrk` is installed
-- make sure the gateway and backend are already running
-- make sure the route returns the expected precheck status
+- Linux x86_64 and Linux arm64 are both supported.
+- Root or `sudo` is recommended so missing tools can be installed automatically.
+- If the host uses `apt-get`, `dnf`, or `yum`, the script can auto-install `curl` and `wrk`.
+- Make sure the gateway and backend are already running.
+- Make sure the route returns the expected precheck status.
 
 ## 中文
 
-在 Linux 服务器上可以直接用下面这个脚本生成可复现的基线压测报告：
+在 Linux 服务器上，可以直接用下面这条脚本生成可复现的基线压测报告：
 
 ```bash
 bash ./scripts/linux-baseline-report.sh \
@@ -44,10 +46,12 @@ bash ./scripts/linux-baseline-report.sh \
 ./target/server-bench/<timestamp>-<label>/report.md
 ```
 
-同目录还会保留原始 `wrk` 输出和环境快照。
+同目录下还会保留原始 `wrk` 输出和环境快照。
 
 执行前请确认：
 
-- 已安装 `wrk`
-- 网关和后端已经启动
-- 预检查返回的是你期望的状态码
+- 同时支持 Linux x86_64 和 Linux arm64。
+- 建议用 root 或具备 `sudo` 的用户执行，这样脚本可以自动补齐缺失工具。
+- 如果系统使用 `apt-get`、`dnf` 或 `yum`，脚本会自动安装 `curl` 和 `wrk`。
+- 网关和后端已经启动。
+- 路由预检查返回的是预期状态码。
