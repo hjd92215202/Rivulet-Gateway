@@ -15,6 +15,10 @@ if [[ ! -f "$ARTIFACT_PATH" ]]; then
   exit 1
 fi
 
+# 后续 rpm 解包时会切到临时目录执行，所以这里先把工件路径标准化成绝对路径，
+# 避免相对路径在目录切换后失效。
+ARTIFACT_PATH="$(cd "$(dirname "$ARTIFACT_PATH")" && pwd)/$(basename "$ARTIFACT_PATH")"
+
 if [[ -z "$WORK_DIR" ]]; then
   WORK_DIR="$(mktemp -d)"
 fi
@@ -73,7 +77,7 @@ validate_installed_root() {
   assert_file "$root_dir/usr/lib/systemd/system/rivulet-gateway.service"
   assert_file "$root_dir/usr/share/doc/rivulet-gateway/README.md"
 
-  # 额外校验 service 中的关键启动命令，避免包内容在但服务定义漂移。
+  # 额外校验 service 中的关键启动命令，避免包内容存在但服务定义漂移。
   if ! grep -q '^ExecStart=/usr/bin/gateway /etc/gateway/gateway.toml$' "$root_dir/usr/lib/systemd/system/rivulet-gateway.service"; then
     echo "service file ExecStart does not match expected gateway command" >&2
     exit 1
