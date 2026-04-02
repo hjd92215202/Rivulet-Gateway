@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve workspace version
         id: version
@@ -51,7 +51,7 @@ jobs:
         run: PORT=18085 bash ./packaging/tests/install-package.sh "$(find ./dist/rpmbuild/x86_64-unknown-linux-gnu/RPMS -name '*.rpm' | head -n 1)"
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rivulet-linux-x86_64-release
           path: |
@@ -64,7 +64,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve workspace version
         id: version
@@ -88,7 +88,7 @@ jobs:
         run: .\scripts\package.ps1 -Target x86_64-pc-windows-msvc -Format zip -SkipBuild
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rivulet-windows-x86_64-release
           path: dist/x86_64-pc-windows-msvc/*.zip
@@ -96,11 +96,10 @@ jobs:
 
   package-linux-arm64:
     name: Release Linux arm64
-    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve workspace version
         id: version
@@ -132,7 +131,7 @@ jobs:
         run: PORT=18085 bash ./packaging/tests/install-package.sh "$(find ./dist/rpmbuild/aarch64-unknown-linux-gnu/RPMS -name '*.rpm' | head -n 1)"
 
       - name: Upload Linux arm64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rivulet-linux-arm64-release
           path: |
@@ -147,9 +146,10 @@ jobs:
     needs:
       - package-linux-x86_64
       - package-windows-x86_64
+      - package-linux-arm64
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: release-assets
 

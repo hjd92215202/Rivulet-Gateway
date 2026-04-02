@@ -64,12 +64,10 @@ impl BenchOptions {
                         parse_usize_list_arg(args.next(), "--concurrency")?;
                 }
                 "--response-sizes" => {
-                    options.response_sizes =
-                        parse_usize_list_arg(args.next(), "--response-sizes")?;
+                    options.response_sizes = parse_usize_list_arg(args.next(), "--response-sizes")?;
                 }
                 "--idle-pools" => {
-                    options.idle_pool_sizes =
-                        parse_usize_list_arg(args.next(), "--idle-pools")?;
+                    options.idle_pool_sizes = parse_usize_list_arg(args.next(), "--idle-pools")?;
                 }
                 other => {
                     return Err(format!("unknown argument {}", other).into());
@@ -213,7 +211,8 @@ async fn run_scenario(
 
     let gateway_port = reserve_port()?;
     let gateway_addr = format!("127.0.0.1:{gateway_port}");
-    let gateway_shutdown = spawn_gateway(gateway_port, backend_addr.to_string(), spec.idle_pool_size);
+    let gateway_shutdown =
+        spawn_gateway(gateway_port, backend_addr.to_string(), spec.idle_pool_size);
 
     // 给 listener 和后台任务一个很短的启动窗口，避免把冷启动抖动混进错误率。
     sleep(Duration::from_millis(120)).await;
@@ -221,8 +220,13 @@ async fn run_scenario(
     let request_bytes = Arc::new(build_downstream_request());
     if options.warmup_secs > 0 {
         let warmup_deadline = Instant::now() + Duration::from_secs(options.warmup_secs);
-        run_workers(spec.concurrency, &gateway_addr, Arc::clone(&request_bytes), warmup_deadline)
-            .await?;
+        run_workers(
+            spec.concurrency,
+            &gateway_addr,
+            Arc::clone(&request_bytes),
+            warmup_deadline,
+        )
+        .await?;
         // 预热只为了让连接和调度进入稳定态，所以统计要在正式测量前清零。
         backend_stats.reset();
     }
@@ -524,7 +528,10 @@ fn print_result(result: &ScenarioResult) {
             .map(|(message, count)| format!("{} x{}", message, count))
             .collect::<Vec<_>>()
             .join(" | ");
-        println!("# errors pool={} body={} concurrency={} -> {}", result.spec.idle_pool_size, result.spec.response_size, result.spec.concurrency, details);
+        println!(
+            "# errors pool={} body={} concurrency={} -> {}",
+            result.spec.idle_pool_size, result.spec.response_size, result.spec.concurrency, details
+        );
     }
 }
 

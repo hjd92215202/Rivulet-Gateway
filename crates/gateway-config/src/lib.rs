@@ -85,14 +85,22 @@ impl GatewayConfigFile {
 
         for route in &self.routes {
             // 路由引用未知 listener 时，请求不会有正确入口绑定。
-            if !self.listeners.iter().any(|item| item.name == route.listener) {
+            if !self
+                .listeners
+                .iter()
+                .any(|item| item.name == route.listener)
+            {
                 return Err(GatewayError::InvalidConfig(format!(
                     "route {} references unknown listener {}",
                     route.name, route.listener
                 )));
             }
             // 路由引用未知 upstream 时，命中后也无法继续转发。
-            if !self.upstreams.iter().any(|item| item.name == route.upstream) {
+            if !self
+                .upstreams
+                .iter()
+                .any(|item| item.name == route.upstream)
+            {
                 return Err(GatewayError::InvalidConfig(format!(
                     "route {} references unknown upstream {}",
                     route.name, route.upstream

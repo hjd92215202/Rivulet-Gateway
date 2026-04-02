@@ -141,7 +141,10 @@ impl ProxyService {
         // 记录这次请求已经尝试失败过的地址，避免重试回到同一个坏节点。
         // 这里是本次请求真正生效的转发策略，
         // 优先级固定为 route override -> upstream override -> runtime default。
-        let policy = route.proxy_policy.or_else(cluster.proxy_policy()).resolve(&self.timeouts);
+        let policy = route
+            .proxy_policy
+            .or_else(cluster.proxy_policy())
+            .resolve(&self.timeouts);
         let mut excluded_addresses = Vec::new();
         // 所有尝试都失败时，最终会从这里返回最后一个可解释错误。
         let mut final_outcome: Option<std::result::Result<CompletedRequest, ProxyConnectionError>> =
@@ -193,13 +196,11 @@ impl ProxyService {
                     downstream
                         .write_all(&upstream_response.bytes)
                         .await
-                        .map_err(|err| {
-                        ProxyConnectionError {
+                        .map_err(|err| ProxyConnectionError {
                             error: GatewayError::Io(format!("write downstream response: {}", err)),
                             request: Some(request_context.clone()),
                             retries: attempt,
-                        }
-                    })?;
+                        })?;
                     downstream
                         .flush()
                         .await
@@ -271,11 +272,16 @@ impl ProxyService {
             let (mut upstream, reused_idle_connection) = if !force_fresh_connect {
                 match endpoint_state.checkout_idle_connection().await {
                     Some(stream) => (stream, true),
-                    None => (self.connect_upstream(endpoint.address.as_str(), policy).await?, false),
+                    None => (
+                        self.connect_upstream(endpoint.address.as_str(), policy)
+                            .await?,
+                        false,
+                    ),
                 }
             } else {
                 (
-                    self.connect_upstream(endpoint.address.as_str(), policy).await?,
+                    self.connect_upstream(endpoint.address.as_str(), policy)
+                        .await?,
                     false,
                 )
             };
@@ -292,9 +298,13 @@ impl ProxyService {
                 return Err(error);
             }
 
-            let response =
-                read_upstream_response(&mut upstream, policy, &self.timeouts, request_context.method)
-                    .await;
+            let response = read_upstream_response(
+                &mut upstream,
+                policy,
+                &self.timeouts,
+                request_context.method,
+            )
+            .await;
             match response {
                 Ok(response) => {
                     // 只有边界明确且上游允许 keep-alive 的连接才回收，避免把脏连接放回池里。
@@ -1332,12 +1342,16 @@ mod tests {
         backend_task.await.expect("backend task");
 
         assert_eq!(accept_count.load(Ordering::SeqCst), 1);
-        assert!(String::from_utf8(first_response)
-            .expect("first response utf-8")
-            .ends_with("one"));
-        assert!(String::from_utf8(second_response)
-            .expect("second response utf-8")
-            .ends_with("two"));
+        assert!(
+            String::from_utf8(first_response)
+                .expect("first response utf-8")
+                .ends_with("one")
+        );
+        assert!(
+            String::from_utf8(second_response)
+                .expect("second response utf-8")
+                .ends_with("two")
+        );
     }
 
     #[tokio::test]
@@ -1372,9 +1386,11 @@ mod tests {
 
         assert_eq!(response.status_code, 200);
         assert!(!response.reusable_connection);
-        assert!(String::from_utf8(response.bytes)
-            .expect("response utf-8")
-            .ends_with("hello"));
+        assert!(
+            String::from_utf8(response.bytes)
+                .expect("response utf-8")
+                .ends_with("hello")
+        );
     }
 
     #[tokio::test]
@@ -1542,7 +1558,10 @@ mod tests {
                 error: GatewayError::Protocol(message),
                 ..
             }) => assert!(message.contains("status code")),
-            other => panic!("expected invalid upstream status line error, got {:?}", other),
+            other => panic!(
+                "expected invalid upstream status line error, got {:?}",
+                other
+            ),
         }
     }
 
@@ -1978,9 +1997,7 @@ mod tests {
             .await
             .expect("connect gateway");
         client
-            .write_all(
-                b"GET /policy HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
-            )
+            .write_all(b"GET /policy HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
             .await
             .expect("write request");
 
@@ -2076,9 +2093,7 @@ mod tests {
             .await
             .expect("connect gateway");
         client
-            .write_all(
-                b"GET /policy HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
-            )
+            .write_all(b"GET /policy HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
             .await
             .expect("write request");
 
@@ -2092,7 +2107,10 @@ mod tests {
                 assert!(message.contains("connect upstream"));
                 assert_eq!(retries, 1);
             }
-            other => panic!("expected route retry override to stop retries, got {:?}", other),
+            other => panic!(
+                "expected route retry override to stop retries, got {:?}",
+                other
+            ),
         }
     }
 
