@@ -112,7 +112,15 @@ parse_metric() {
 parse_percentile() {
   local file_path="$1"
   local percentile="$2"
-  awk -v percentile="$percentile" '$1 == percentile { print $2; exit }' "$file_path"
+  awk -v percentile="$percentile" '
+    $1 == percentile { print $2; found=1; exit }
+    $1 == "#" && $2 == "[" percentile "]" { print $3; found=1; exit }
+    END {
+      if (!found) {
+        exit 0
+      }
+    }
+  ' "$file_path"
 }
 
 run_case() {
