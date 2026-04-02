@@ -156,12 +156,29 @@ jobs:
         with:
           path: release-assets
 
+      - name: Stage publish assets
+        run: |
+          mkdir -p publish-assets
+
+          linux_x86_tar="$(find release-assets/rivulet-linux-x86_64-release -type f -name '*.tar.gz' | head -n 1)"
+          linux_arm_tar="$(find release-assets/rivulet-linux-arm64-release -type f -name '*.tar.gz' | head -n 1)"
+          windows_zip="$(find release-assets/rivulet-windows-x86_64-release -type f -name '*.zip' | head -n 1)"
+
+          cp "$linux_x86_tar" "publish-assets/$(basename "${linux_x86_tar%.tar.gz}")-linux-x86_64.tar.gz"
+          cp "$linux_arm_tar" "publish-assets/$(basename "${linux_arm_tar%.tar.gz}")-linux-arm64.tar.gz"
+          cp "$windows_zip" "publish-assets/$(basename "${windows_zip%.zip}")-windows-x86_64.zip"
+
+          find release-assets/rivulet-linux-x86_64-release -type f -name '*.rpm' -exec cp {} publish-assets/ \;
+          find release-assets/rivulet-linux-arm64-release -type f -name '*.rpm' -exec cp {} publish-assets/ \;
+
+          find publish-assets -maxdepth 1 -type f | sort
+
       - name: Build SHA256 manifest
         run: |
-          find release-assets -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          find publish-assets -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
 
       - name: Verify release checksums
-        run: bash ./packaging/tests/verify-checksums.sh ./SHA256SUMS.txt .
+        run: bash ./packaging/tests/verify-checksums.sh ./SHA256SUMS.txt ./publish-assets
 
       - name: Ensure GitHub release exists
         env:
@@ -180,8 +197,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mapfile -t files < <(find release-assets -type f | sort)
-          gh release upload "${GITHUB_REF_NAME}" \
-            --clobber \
-            "${files[@]}" \
-            SHA256SUMS.txt
+          while IFS= read -r file; do
+            gh release upload "${GITHUB_REF_NAME}" --clobber "$file"
+          done < <(find publish-assets -maxdepth 1 -type f | sort)
+
+          gh release upload "${GITHUB_REF_NAME}" --clobber SHA256SUMS.txt
