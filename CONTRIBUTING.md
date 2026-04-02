@@ -33,6 +33,11 @@ We are building toward an Apache-grade engineering bar:
 - Validation performed
 - Follow-up work if the change is intentionally incomplete
 
+Issue and PR hygiene:
+
+- use the repository issue templates for bug, performance, and release work
+- use the pull request template when opening reviewable changes
+
 ## Testing Expectations
 
 At minimum, contributors should run the narrowest relevant checks:
