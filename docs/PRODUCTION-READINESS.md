@@ -1,4 +1,6 @@
-# Production Readiness Report
+# Production Readiness Report / 生产就绪度报告
+
+## English
 
 Report date: April 2, 2026
 
@@ -6,7 +8,7 @@ Project: `Rivulet Gateway / 溪流网关`
 
 This report describes the current boundary of the gateway based on repository state, automated tests, packaging work, and local benchmark exploration.
 
-## Executive Summary
+### Executive Summary
 
 Current status:
 
@@ -20,7 +22,7 @@ Why:
 - conservative keepalive reuse exists for safe response boundaries
 - but the protocol surface and runtime model are still narrow
 
-## What Exists Today
+### What Exists Today
 
 Implemented layers:
 
@@ -35,7 +37,7 @@ Implemented layers:
 - Windows and Linux packaging skeleton
 - GitHub Actions for CI, packaging, release, and nightly benchmark collection
 
-## Current Hard Limits
+### Current Hard Limits
 
 - HTTP/1.1 only
 - no TLS termination
@@ -47,14 +49,14 @@ Implemented layers:
 - no hot reload or dynamic config plane yet
 - no signed release artifacts yet
 
-## Known Engineering Gaps
+### Known Engineering Gaps
 
 1. `worker_threads` is still a config field, but it is not yet wired into a custom Tokio runtime builder.
 2. Packaging validation is strong at the staged-layout level, but real Linux installation and service lifecycle validation still needs disposable VM coverage.
 3. The benchmark harness is intentionally conservative and local; it is not a substitute for server-grade load testing on Linux.
 4. Release checksums exist, but artifact signing and trust-chain publication are not implemented.
 
-## Validation Completed
+### Validation Completed
 
 Repository validation:
 
@@ -71,7 +73,7 @@ Key validation entry points:
 - [packaging/tests/run-linux-validation.sh](C:\Users\brace\Documents\New%20project\packaging\tests\run-linux-validation.sh)
 - [scripts/bench-baseline.sh](C:\Users\brace\Documents\New%20project\scripts\bench-baseline.sh)
 
-## Local Benchmark Snapshot
+### Local Benchmark Snapshot
 
 Environment used:
 
@@ -103,14 +105,14 @@ Engineering conclusion:
 - conservative upstream connection reuse is already materially important for stability
 - future production exploration should prioritize Linux hosts and real NIC traffic before drawing capacity conclusions
 
-## Packaging And Release Readiness
+### Packaging And Release Readiness
 
 Current state:
 
 - Windows x86_64 zip: implemented and locally validated
 - Linux x86_64 tar.gz: implemented in scripts and workflows
 - Linux x86_64 rpm: implemented in scripts and workflows
-- Linux arm64 tar.gz/rpm: implemented in workflows, intended for native arm64 runners
+- Linux arm64 tar.gz/rpm: implemented in scripts and workflows
 
 Release automation status:
 
@@ -125,7 +127,7 @@ Remaining release-grade work:
 - upgrade and rollback validation
 - native Linux install verification in disposable test systems
 
-## Production Use Guidance Right Now
+### Production Use Guidance Right Now
 
 Reasonable near-term use:
 
@@ -141,7 +143,7 @@ Not recommended yet:
 - multi-tenant policy enforcement
 - high-throughput production ingress without Linux server benchmarking and installation validation
 
-## Next Bottlenecks To Address
+### Next Bottlenecks To Address
 
 1. Linux real-host benchmark and installation validation
 2. downstream keepalive lifecycle improvements
@@ -149,3 +151,155 @@ Not recommended yet:
 4. TLS and certificate lifecycle design
 5. runtime configurability and operations plane
 6. signed release process and public support policy
+
+## 中文
+
+报告日期：2026 年 4 月 2 日
+
+项目：`Rivulet Gateway / 溪流网关`
+
+本报告基于仓库现状、自动化测试、打包工作和本地 benchmark 探索，描述当前网关的能力边界。
+
+### 执行摘要
+
+当前状态：
+
+- 适合受控实验环境、staging 环境和低风险灰度验证
+- 还不适合承接大范围公网生产流量
+
+原因：
+
+- 核心反向代理链路已经存在并且有测试覆盖
+- 打包和 CI/CD 已经内建到仓库
+- 对安全响应边界已有保守的 keepalive 复用
+- 但协议面和运行时模型仍然偏窄
+
+### 当前已具备能力
+
+已实现层次：
+
+- 强类型配置模型
+- 路由
+- 过滤器链骨架
+- 上游注册中心与健康状态跟踪
+- HTTP/1.1 请求解析
+- 基于原始 TCP 的反向代理
+- 保守的上游 keepalive 复用
+- 监听运行时与优雅 drain
+- Windows 与 Linux 打包骨架
+- 用于 CI、打包、发布和夜间 benchmark 收集的 GitHub Actions
+
+### 当前硬边界
+
+- 仅支持 HTTP/1.1
+- 没有 TLS termination
+- 没有 HTTP/2
+- 不支持 chunked request
+- 不支持 chunked upstream response
+- 没有下游 keepalive 请求复用；当前模型本质上是一条接入连接只处理一个请求
+- 还没有真正的认证、限流、WAF 或策略引擎
+- 还没有热更新或动态配置面
+- 还没有发布产物签名
+
+### 已知工程缺口
+
+1. `worker_threads` 仍只是配置字段，还没有接入自定义 Tokio runtime builder。
+2. 打包验证在 staged-layout 层面已经较强，但真实 Linux 安装与服务生命周期验证还需要 disposable VM 覆盖。
+3. benchmark 工具当前故意保持保守且只跑本地，不可替代 Linux 服务器级负载测试。
+4. 发布 checksum 已存在，但产物签名与信任链发布尚未实现。
+
+### 已完成验证
+
+仓库级验证：
+
+- workspace tests
+- 协议边界测试
+- keepalive 复用测试
+- Windows 打包构建与 smoke 验证
+- Linux 包结构验证已接入 CI
+- Linux 安装后布局 smoke 验证已接入 CI 和 release workflow
+
+关键验证入口：
+
+- [packaging/SERVER-VALIDATION.md](C:\Users\brace\Documents\New%20project\packaging\SERVER-VALIDATION.md)
+- [packaging/tests/run-linux-validation.sh](C:\Users\brace\Documents\New%20project\packaging\tests\run-linux-validation.sh)
+- [scripts/bench-baseline.sh](C:\Users\brace\Documents\New%20project\scripts\bench-baseline.sh)
+
+### 本地 Benchmark 快照
+
+测试环境：
+
+- Windows 10 Pro build 19045
+- Intel i7-6500U
+- 2 个物理核心 / 4 个逻辑处理器
+- 16 GB RAM
+- Rust 1.92.0
+
+重要提示：
+
+- 这些数字只是本地 loopback 基线，不是可直接对外宣称的服务器 benchmark
+- 它们适合用来做趋势跟踪和瓶颈发现，不适合直接用于容量规划
+
+当 `upstream_idle_pool_size = 1` 时，观察到的稳定路径：
+
+- 64 字节响应、并发 8：约 1561 req/s，p95 约 9.9 ms
+- 64 字节响应、并发 32：约 1266 req/s，p95 约 58.8 ms
+- 4096 字节响应、并发 8：约 1590 req/s，p95 约 11.0 ms
+- 4096 字节响应、并发 64：约 1734 req/s，p95 约 57.1 ms
+
+观察到的警示信号：
+
+- 当关闭上游 keepalive、每个请求都重连时，这台 Windows 主机会更早出现 `502` 和 socket churn 行为
+- 这说明在网关核心还没有被完全打满之前，连接 churn 和本地 socket 生命周期就已经先成为瓶颈
+
+工程结论：
+
+- 保守的上游连接复用已经对稳定性产生了实质帮助
+- 后续生产探索应优先转向 Linux 主机和真实网卡流量，再做容量判断
+
+### 打包与发布就绪度
+
+当前状态：
+
+- Windows x86_64 zip：已实现并完成本地验证
+- Linux x86_64 tar.gz：已在脚本和工作流中实现
+- Linux x86_64 rpm：已在脚本和工作流中实现
+- Linux arm64 tar.gz/rpm：已在脚本和工作流中实现
+
+发布自动化状态：
+
+- CI 会构建并验证打包产物
+- release workflow 会产出发行包和 checksum 清单
+- 已有 checksum 校验脚本
+
+距离更高等级发布还需补齐：
+
+- 产物签名
+- provenance / SBOM 策略
+- 升级与回滚验证
+- 在一次性测试系统中完成原生 Linux 安装验证
+
+### 当前生产使用建议
+
+当前合理的近端使用场景：
+
+- 开发环境
+- CI 集成测试
+- 内部 staging
+- 范围受控、可快速回滚的低风险灰度路由
+
+当前不建议：
+
+- 面向公网混合客户端的边缘网关
+- 大规模 TLS termination
+- 多租户策略执行
+- 在缺少 Linux 服务器 benchmark 与安装验证前承接高吞吐生产入口
+
+### 下一批瓶颈
+
+1. Linux 真实主机 benchmark 与安装验证
+2. 下游 keepalive 生命周期增强
+3. 对 chunked transfer 的支持，或更彻底的显式非支持策略
+4. TLS 与证书生命周期设计
+5. 运行时可配置性与运维平面
+6. 签名发布流程与公开支持策略

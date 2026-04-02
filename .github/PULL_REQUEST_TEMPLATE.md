@@ -1,8 +1,12 @@
-## Summary
+## English Summary
 
 Explain what this change does and why it is needed.
 
-## Change Type
+## 中文摘要
+
+说明这次改动做了什么，以及为什么需要它。
+
+## Change Type / 变更类型
 
 - feat
 - fix
@@ -11,18 +15,18 @@ Explain what this change does and why it is needed.
 - release
 - performance
 
-## Risk
+## Risk / 风险
 
 Describe the main behavioral or operational risk introduced by this change.
 
-## Validation
+## Validation / 验证
 
 List the exact commands or workflows used for validation.
 
-## Documentation
+## Documentation / 文档
 
 State whether README, packaging docs, governance docs, or release notes were updated.
 
-## Follow-Up
+## Follow-Up / 后续项
 
 List any intentionally deferred work.

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="$("$REPO_ROOT/scripts/get-version.sh")"
+VERSION="$(bash "$REPO_ROOT/scripts/get-version.sh")"
 
 TARGET="${TARGET:-}"
 FORMAT="auto"

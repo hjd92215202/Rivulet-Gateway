@@ -1,55 +1,59 @@
 ---
-name: Performance report
-about: Report a throughput, latency, or resource regression
+name: Performance report / 性能反馈
+about: Report a throughput, latency, or resource regression / 报告吞吐、延迟或资源回归
 title: "[perf] "
 labels: performance
 assignees: ""
 ---
 
-## Summary
+## English Summary
 
 Describe the observed regression or bottleneck.
 
-## Environment
+## 中文摘要
 
-- version or commit:
-- platform:
-- architecture:
-- cpu and memory:
-- benchmark host type:
+请描述观察到的性能回归或瓶颈。
+
+## Environment / 环境
+
+- version or commit / 版本或提交：
+- platform / 平台：
+- architecture / 架构：
+- cpu and memory / CPU 和内存：
+- benchmark host type / 测试主机类型：
   local / CI / server
 
-## Workload
+## Workload / 负载模型
 
-- concurrency:
-- response size:
-- upstream keepalive setting:
-- duration:
-- benchmark command:
+- concurrency / 并发：
+- response size / 响应大小：
+- upstream keepalive setting / 上游 keepalive 设置：
+- duration / 持续时间：
+- benchmark command / benchmark 命令：
 
-## Results
+## Results / 结果
 
-Include the measured values:
+Include the measured values / 请填写测得的数据：
 
-- throughput:
-- p50 latency:
-- p95 latency:
-- p99 latency:
-- error rate:
+- throughput：
+- p50 latency：
+- p95 latency：
+- p99 latency：
+- error rate：
 
-## Comparison
+## Comparison / 对比基线
 
-What are you comparing against:
+What are you comparing against / 你在和什么比较：
 
 - previous commit
 - previous release
 - another platform
 - another configuration
 
-## Evidence
+## Evidence / 证据
 
 Attach CSV output, logs, profiler output, or screenshots if available.
 
-## Notes
+## Notes / 备注
 
 Mention whether access logging was disabled and whether the result is reproducible.
