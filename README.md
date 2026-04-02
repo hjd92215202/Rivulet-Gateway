@@ -61,6 +61,7 @@ CI/CD:
 - release workflow: `.github/workflows/release.yml`
 - nightly benchmark workflow: `.github/workflows/nightly-benchmark.yml`
 - workflow architecture: `docs/WORKFLOW-ARCHITECTURE.md`
+- Linux first-test checklist: `docs/LINUX-SERVER-FIRST-TEST.md`
 - packaging guide: `packaging/README.md`
 
 Project policy docs:
@@ -135,6 +136,7 @@ CI/CD 入口：
 - 发布工作流：`.github/workflows/release.yml`
 - 夜间 benchmark 工作流：`.github/workflows/nightly-benchmark.yml`
 - 工作流架构图：`docs/WORKFLOW-ARCHITECTURE.md`
+- Linux 首测清单：`docs/LINUX-SERVER-FIRST-TEST.md`
 - 打包说明：`packaging/README.md`
 
 项目治理文档：
