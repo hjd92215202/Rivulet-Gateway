@@ -175,7 +175,10 @@ jobs:
 
       - name: Build SHA256 manifest
         run: |
-          find publish-assets -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          (
+            cd publish-assets
+            find . -maxdepth 1 -type f -printf '%P\0' | sort -z | xargs -0 sha256sum > ../SHA256SUMS.txt
+          )
 
       - name: Verify release checksums
         run: bash ./packaging/tests/verify-checksums.sh ./SHA256SUMS.txt ./publish-assets
