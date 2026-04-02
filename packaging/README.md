@@ -29,6 +29,7 @@ Smoke suites:
 
 - Linux: `packaging/tests/server-smoke.sh`
 - Windows: `packaging/tests/server-smoke.ps1`
+- Artifact validation: `packaging/tests/validate-package.sh`
 
 Example commands:
 
@@ -46,6 +47,8 @@ GitHub CI/CD policy:
 
 - Every push and pull request runs workspace tests on Linux and Windows.
 - CI also builds and smoke-tests Windows x86_64 and Linux x86_64 packages.
+- CI validates Linux `tar.gz` and `rpm` package contents before publishing artifacts.
 - Tag pushes like `v0.1.0` publish release assets automatically.
 - Linux arm64 packaging is wired for GitHub Actions and runs on `ubuntu-24.04-arm` during manual workflow dispatch.
 - If the repository visibility or runner policy does not allow hosted arm64 runners, replace that job with a self-hosted arm64 runner label.
+- A separate nightly workflow runs a conservative benchmark baseline and uploads CSV output for trend tracking.

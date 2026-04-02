@@ -1,0 +1,36 @@
+name: nightly-benchmark
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  GATEWAY_DISABLE_ACCESS_LOG: "1"
+
+jobs:
+  benchmark-linux-x86_64:
+    name: Benchmark Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Run conservative benchmark baseline
+        run: bash ./scripts/bench-baseline.sh
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivulet-benchmark-linux-x86_64
+          path: target/bench/*.csv
+          if-no-files-found: error

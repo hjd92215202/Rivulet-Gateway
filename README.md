@@ -56,4 +56,5 @@ CI/CD:
 
 - CI workflow: `.github/workflows/ci.yml`
 - Release workflow: `.github/workflows/release.yml`
+- Nightly benchmark workflow: `.github/workflows/nightly-benchmark.yml`
 - Packaging guide: `packaging/README.md`
