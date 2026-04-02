@@ -1,0 +1,30 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: Breaking Changes
+      labels:
+        - breaking-change
+    - title: Features
+      labels:
+        - enhancement
+        - feature
+    - title: Fixes
+      labels:
+        - bug
+        - fix
+    - title: Performance
+      labels:
+        - performance
+    - title: Packaging And Release
+      labels:
+        - release
+        - packaging
+    - title: Documentation And Governance
+      labels:
+        - documentation
+        - governance
+    - title: Other Changes
+      labels:
+        - "*"

@@ -67,3 +67,4 @@ Project policy docs:
 - Governance: `GOVERNANCE.md`
 - Code of conduct: `CODE_OF_CONDUCT.md`
 - Production readiness report: `docs/PRODUCTION-READINESS.md`
+- Milestone roadmap: `docs/MILESTONES.md`

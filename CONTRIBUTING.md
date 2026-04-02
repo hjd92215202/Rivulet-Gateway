@@ -37,6 +37,7 @@ Issue and PR hygiene:
 
 - use the repository issue templates for bug, performance, and release work
 - use the pull request template when opening reviewable changes
+- ownership review routes are defined in `.github/CODEOWNERS`
 
 ## Testing Expectations
 

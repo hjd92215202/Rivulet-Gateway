@@ -167,6 +167,7 @@ jobs:
           mapfile -t files < <(find release-assets -type f | sort)
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
-            --notes "Automated Rivulet Gateway release for ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --latest \
             "${files[@]}" \
             SHA256SUMS.txt

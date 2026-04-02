@@ -1,0 +1,25 @@
+# Default ownership for Rivulet Gateway.
+# This owner handle is inferred from the local git identity and should be updated
+# if the canonical GitHub maintainer or team handle changes.
+
+* @hjd92215202
+
+# Core gateway kernel
+/crates/gateway-proxy/ @hjd92215202
+/crates/gateway-runtime/ @hjd92215202
+/crates/gateway-upstream/ @hjd92215202
+/crates/gateway-router/ @hjd92215202
+/crates/gateway-types/ @hjd92215202
+
+# Release and delivery
+/.github/ @hjd92215202
+/packaging/ @hjd92215202
+/scripts/ @hjd92215202
+
+# Governance and project docs
+/README.md @hjd92215202
+/CONTRIBUTING.md @hjd92215202
+/SECURITY.md @hjd92215202
+/GOVERNANCE.md @hjd92215202
+/CODE_OF_CONDUCT.md @hjd92215202
+/docs/ @hjd92215202
