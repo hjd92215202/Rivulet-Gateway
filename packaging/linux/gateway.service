@@ -1,0 +1,19 @@
+[Unit]
+Description=Rivulet Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gateway /etc/gateway/gateway.toml
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log /run
+
+[Install]
+WantedBy=multi-user.target

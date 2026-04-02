@@ -1,0 +1,37 @@
+[runtime]
+worker_threads = 4
+graceful_shutdown_secs = 30
+downstream_read_timeout_ms = 5000
+upstream_connect_timeout_ms = 1500
+upstream_read_timeout_ms = 4000
+upstream_retry_attempts = 2
+upstream_idle_pool_size = 1
+max_upstream_status_line_bytes = 8192
+max_upstream_headers = 100
+max_upstream_header_bytes = 65536
+max_upstream_body_bytes = 8388608
+max_request_line_bytes = 8192
+max_request_headers = 100
+max_request_body_bytes = 1048576
+
+[[listeners]]
+name = "public-http"
+address = "0.0.0.0:8080"
+protocol = "http1"
+
+[[upstreams]]
+name = "local-backend"
+load_balance = "round_robin"
+
+[[upstreams.endpoints]]
+address = "127.0.0.1:9000"
+weight = 1
+
+[[routes]]
+name = "default"
+listener = "public-http"
+hosts = ["localhost"]
+path_prefixes = ["/"]
+methods = []
+upstream = "local-backend"
+filters = ["request-id"]
