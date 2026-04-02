@@ -163,14 +163,25 @@ jobs:
       - name: Verify release checksums
         run: bash ./packaging/tests/verify-checksums.sh ./SHA256SUMS.txt .
 
-      - name: Create GitHub release
+      - name: Ensure GitHub release exists
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "release already exists for ${GITHUB_REF_NAME}"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --latest
+          fi
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mapfile -t files < <(find release-assets -type f | sort)
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            --latest \
+          gh release upload "${GITHUB_REF_NAME}" \
+            --clobber \
             "${files[@]}" \
             SHA256SUMS.txt
