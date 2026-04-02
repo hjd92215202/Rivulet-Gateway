@@ -17,9 +17,21 @@ env:
   GATEWAY_DISABLE_ACCESS_LOG: "1"
 
 jobs:
+  script-standards:
+    name: Script Standards
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check repository shell scripts
+        run: bash ./scripts/check-script-standards.sh
+
   test-linux:
     name: Test Linux x86_64
     runs-on: ubuntu-24.04
+    needs:
+      - script-standards
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -38,6 +50,8 @@ jobs:
   test-windows:
     name: Test Windows x86_64
     runs-on: windows-2022
+    needs:
+      - script-standards
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -59,6 +73,8 @@ jobs:
   test-linux-arm64:
     name: Test Linux arm64
     runs-on: ubuntu-24.04-arm
+    needs:
+      - script-standards
     steps:
       - name: Checkout
         uses: actions/checkout@v5
