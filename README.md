@@ -60,6 +60,7 @@ CI/CD:
 - CI workflow: `.github/workflows/ci.yml`
 - release workflow: `.github/workflows/release.yml`
 - nightly benchmark workflow: `.github/workflows/nightly-benchmark.yml`
+- workflow architecture: `docs/WORKFLOW-ARCHITECTURE.md`
 - packaging guide: `packaging/README.md`
 
 Project policy docs:
@@ -133,6 +134,7 @@ CI/CD 入口：
 - CI 工作流：`.github/workflows/ci.yml`
 - 发布工作流：`.github/workflows/release.yml`
 - 夜间 benchmark 工作流：`.github/workflows/nightly-benchmark.yml`
+- 工作流架构图：`docs/WORKFLOW-ARCHITECTURE.md`
 - 打包说明：`packaging/README.md`
 
 项目治理文档：
