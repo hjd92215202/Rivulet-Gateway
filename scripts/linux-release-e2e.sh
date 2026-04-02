@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-TAG="v0.1.5"
+TAG="v0.1.6"
 REPO_SLUG="hjd92215202/Rivulet-Gateway"
 HOST_HEADER="localhost"
 GATEWAY_PORT="18080"
@@ -21,7 +21,7 @@ required:
   --host <host>            host header matched by the generated route
 
 optional:
-  --tag <tag>              release tag, default: v0.1.5
+  --tag <tag>              release tag, default: v0.1.6
   --repo <owner/name>      github repository slug, default: hjd92215202/Rivulet-Gateway
   --gateway-port <port>    gateway listen port, default: 18080
   --backend-port <port>    fixture backend port, default: 19000
@@ -33,7 +33,7 @@ optional:
 example:
   bash ./scripts/linux-release-e2e.sh \
     --host llmtamer.com:8080 \
-    --tag v0.1.5 \
+    --tag v0.1.6 \
     --label llmtamer-e2e
 EOF
 }
@@ -153,6 +153,7 @@ trap cleanup EXIT
 
 release_json_path="$DOWNLOAD_DIR/release.json"
 release_api_url="https://api.github.com/repos/$REPO_SLUG/releases/tags/$TAG"
+echo "resolving release metadata for tag=$TAG repo=$REPO_SLUG"
 curl -fsSL "$release_api_url" -o "$release_json_path"
 
 choose_asset_url() {
@@ -179,14 +180,18 @@ TARBALL_URL="$(choose_asset_url "-${ASSET_ARCH_SUFFIX}.tar.gz")"
 SHA_URL="$(choose_asset_url "SHA256SUMS.txt")"
 TARBALL_NAME="$(basename "$TARBALL_URL")"
 
+echo "downloading tarball=$TARBALL_NAME"
 curl -fL "$TARBALL_URL" -o "$DOWNLOAD_DIR/$TARBALL_NAME"
+echo "downloading checksum manifest"
 curl -fL "$SHA_URL" -o "$DOWNLOAD_DIR/SHA256SUMS.txt"
 
+echo "verifying release checksum"
 (
   cd "$DOWNLOAD_DIR"
   grep " ${TARBALL_NAME}$" SHA256SUMS.txt | sha256sum -c -
 )
 
+echo "extracting package archive"
 tar -xzf "$DOWNLOAD_DIR/$TARBALL_NAME" -C "$EXTRACT_DIR"
 PACKAGE_ROOT="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 if [[ -z "$PACKAGE_ROOT" ]]; then
@@ -241,9 +246,11 @@ python3 "$REPO_ROOT/scripts/fixture-backend.py" \
   --default-bytes 1024 \
   >"$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID="$!"
+echo "started bundled backend pid=$BACKEND_PID port=$BACKEND_PORT"
 
 "$PACKAGE_ROOT/usr/bin/gateway" "$GATEWAY_CONFIG_PATH" >"$LOG_DIR/gateway.log" 2>&1 &
 GATEWAY_PID="$!"
+echo "started packaged gateway pid=$GATEWAY_PID port=$GATEWAY_PORT"
 
 wait_for_status() {
   local expected="$1"
@@ -251,11 +258,12 @@ wait_for_status() {
   local path="$3"
   local attempts="${4:-40}"
   local delay_secs="${5:-0.25}"
+  local max_time_secs="${6:-3}"
   local url="http://127.0.0.1:${GATEWAY_PORT}${path}"
   local code=""
 
   for _ in $(seq 1 "$attempts"); do
-    code="$(curl -sS -o /dev/null -w "%{http_code}" -H "Host: $host_header" "$url" || true)"
+    code="$(curl --max-time "$max_time_secs" -sS -o /dev/null -w "%{http_code}" -H "Host: $host_header" "$url" || true)"
     if [[ "$code" == "$expected" ]]; then
       echo "$code"
       return 0
@@ -270,9 +278,12 @@ wait_for_status() {
 VALID_PATH="$BENCH_PATH"
 WRONG_HOST="invalid.example.test"
 
+echo "validating healthy route returns 200"
 PRECHECK_STATUS="$(wait_for_status "200" "$HOST_HEADER" "$VALID_PATH")"
-WRONG_HOST_STATUS="$(wait_for_status "404" "$WRONG_HOST" "$VALID_PATH" 5 0.2 || true)"
+echo "validating unmatched host returns 404"
+WRONG_HOST_STATUS="$(wait_for_status "404" "$WRONG_HOST" "$VALID_PATH" 5 0.2 2 || true)"
 
+echo "running baseline benchmark matrix"
 bash "$REPO_ROOT/scripts/linux-baseline-report.sh" \
   --url "http://127.0.0.1:${GATEWAY_PORT}${BENCH_PATH}" \
   --host "$HOST_HEADER" \
@@ -282,12 +293,15 @@ bash "$REPO_ROOT/scripts/linux-baseline-report.sh" \
 
 BENCH_REPORT_PATH="$(find "$REPORT_DIR" -name report.md | sort | tail -n 1)"
 
+echo "stopping bundled backend to verify degraded-path 502 behavior"
 kill "$BACKEND_PID" >/dev/null 2>&1 || true
 wait "$BACKEND_PID" >/dev/null 2>&1 || true
 BACKEND_PID=""
 
-BACKEND_DOWN_STATUS="$(wait_for_status "502" "$HOST_HEADER" "$VALID_PATH" 5 0.2 || true)"
+echo "validating backend-down response returns 502"
+BACKEND_DOWN_STATUS="$(wait_for_status "502" "$HOST_HEADER" "$VALID_PATH" 3 0.3 8 || true)"
 
+echo "writing summary report"
 cat >"$SUMMARY_PATH" <<EOF
 # Linux Release E2E Summary
 

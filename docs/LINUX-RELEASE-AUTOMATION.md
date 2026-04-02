@@ -19,12 +19,16 @@ The automation script:
 - runs the baseline benchmark reporter
 - writes a summary report and a benchmark report
 
+Note:
+
+- After the benchmark report path is printed, the script still performs one final backend-down validation that expects `502`, so a short delay before `summary.md` appears is normal.
+
 Usage:
 
 ```bash
 bash ./scripts/linux-release-e2e.sh \
   --host llmtamer.com:8080 \
-  --tag v0.1.5 \
+  --tag v0.1.6 \
   --label llmtamer-e2e
 ```
 
@@ -65,7 +69,7 @@ Prerequisites:
 ```bash
 bash ./scripts/linux-release-e2e.sh \
   --host llmtamer.com:8080 \
-  --tag v0.1.5 \
+  --tag v0.1.6 \
   --label llmtamer-e2e
 ```
 
@@ -81,3 +85,7 @@ bash ./scripts/linux-release-e2e.sh \
 - `sha256sum`
 - `python3`
 - `wrk`
+
+说明：
+
+- 当终端已经打印出 `report.md` 路径后，脚本还会继续做最后一步“后端下线后返回 502”的校验，所以 `summary.md` 晚几秒出现是正常现象。
