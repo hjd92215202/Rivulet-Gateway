@@ -4,7 +4,8 @@ param(
     [ValidateSet("auto", "dir", "zip", "tar.gz", "rpm")]
     [string]$Format = "auto",
     [ValidateSet("release", "debug")]
-    [string]$Profile = "release"
+    [string]$Profile = "release",
+    [switch]$SkipBuild
 )
 
 Set-StrictMode -Version Latest
@@ -111,9 +112,14 @@ if (-not [string]::IsNullOrWhiteSpace($Target)) {
     $buildArgs += @("--target", $Target)
 }
 
-Write-Host "building Rivulet Gateway"
-Write-Host "target=$Target format=$resolvedFormat profile=$Profile"
-& cargo @buildArgs
+if (-not $SkipBuild) {
+    Write-Host "building Rivulet Gateway"
+    Write-Host "target=$Target format=$resolvedFormat profile=$Profile"
+    & cargo @buildArgs
+} else {
+    Write-Host "packaging existing build"
+    Write-Host "target=$Target format=$resolvedFormat profile=$Profile"
+}
 
 $binaryPath = if ([string]::IsNullOrWhiteSpace($Target)) {
     Join-Path $script:RepoRoot "target\$Profile\$binaryName"
@@ -126,7 +132,12 @@ if (-not (Test-Path $binaryPath)) {
 }
 
 $distRoot = Join-Path $script:RepoRoot "dist\$Target"
-$packageRoot = Join-Path $distRoot "rivulet-gateway-$script:Version"
+$packageBaseName = "rivulet-gateway-$script:Version"
+$packageRoot = if ($resolvedFormat -eq "dir") {
+    Join-Path $distRoot $packageBaseName
+} else {
+    Join-Path $distRoot "$packageBaseName-staging"
+}
 if (Test-Path $packageRoot) {
     Remove-Item -Recurse -Force $packageRoot
 }
@@ -142,20 +153,22 @@ switch ($resolvedFormat) {
         Write-Host "package root: $packageRoot"
     }
     "zip" {
-        $zipPath = "$packageRoot.zip"
+        $zipPath = Join-Path $distRoot "$packageBaseName.zip"
         if (Test-Path $zipPath) {
             Remove-Item -Force $zipPath
         }
         Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath
         Write-Host "archive: $zipPath"
+        Remove-Item -Recurse -Force $packageRoot
     }
     "tar.gz" {
-        $tarPath = "$packageRoot.tar.gz"
+        $tarPath = Join-Path $distRoot "$packageBaseName.tar.gz"
         if (Test-Path $tarPath) {
             Remove-Item -Force $tarPath
         }
         tar -czf $tarPath -C $distRoot (Split-Path -Leaf $packageRoot)
         Write-Host "archive: $tarPath"
+        Remove-Item -Recurse -Force $packageRoot
     }
     "rpm" {
         throw "rpm packaging should be built on Linux with scripts/package.sh --format rpm"

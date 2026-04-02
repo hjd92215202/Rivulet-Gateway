@@ -20,6 +20,7 @@ Engineering standard from today onward:
 - Prefer explicit design docs, reproducible scripts, and minimal release-time dependencies.
 - Treat portability as a first-class requirement for Windows, Linux x86_64, and Linux arm64.
 - Keep project governance and distribution assets close to the source tree instead of hiding them in external tooling.
+- Make CI/CD and packaging reproducible through repository-owned GitHub Actions workflows.
 
 Current kernel cut:
 
@@ -50,3 +51,9 @@ Run:
 ```powershell
 cargo run -p gateway-main -- config/gateway.toml
 ```
+
+CI/CD:
+
+- CI workflow: `.github/workflows/ci.yml`
+- Release workflow: `.github/workflows/release.yml`
+- Packaging guide: `packaging/README.md`

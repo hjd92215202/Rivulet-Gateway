@@ -1,0 +1,142 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  GATEWAY_DISABLE_ACCESS_LOG: "1"
+
+jobs:
+  package-linux-x86_64:
+    name: Release Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install rpm toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Build release binary
+        run: cargo build -p gateway-main --release --target x86_64-unknown-linux-gnu
+
+      - name: Build Linux tarball
+        run: bash ./scripts/package.sh --target x86_64-unknown-linux-gnu --format tar.gz --skip-build
+
+      - name: Build Linux rpm
+        run: bash ./scripts/package.sh --target x86_64-unknown-linux-gnu --format rpm --skip-build
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivulet-linux-x86_64-release
+          path: |
+            dist/x86_64-unknown-linux-gnu/*.tar.gz
+            dist/rpmbuild/x86_64-unknown-linux-gnu/RPMS/**/*.rpm
+          if-no-files-found: error
+
+  package-windows-x86_64:
+    name: Release Windows x86_64
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        shell: powershell
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build release binary
+        shell: powershell
+        run: cargo build -p gateway-main --release --target x86_64-pc-windows-msvc
+
+      - name: Build Windows zip
+        shell: powershell
+        run: .\scripts\package.ps1 -Target x86_64-pc-windows-msvc -Format zip -SkipBuild
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivulet-windows-x86_64-release
+          path: dist/x86_64-pc-windows-msvc/*.zip
+          if-no-files-found: error
+
+  package-linux-arm64:
+    name: Release Linux arm64
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install rpm toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Build release binary
+        run: cargo build -p gateway-main --release --target aarch64-unknown-linux-gnu
+
+      - name: Build Linux arm64 tarball
+        run: bash ./scripts/package.sh --target aarch64-unknown-linux-gnu --format tar.gz --skip-build
+
+      - name: Build Linux arm64 rpm
+        run: bash ./scripts/package.sh --target aarch64-unknown-linux-gnu --format rpm --skip-build
+
+      - name: Upload Linux arm64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivulet-linux-arm64-release
+          path: |
+            dist/aarch64-unknown-linux-gnu/*.tar.gz
+            dist/rpmbuild/aarch64-unknown-linux-gnu/RPMS/**/*.rpm
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    needs:
+      - package-linux-x86_64
+      - package-windows-x86_64
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Build SHA256 manifest
+        run: |
+          find release-assets -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mapfile -t files < <(find release-assets -type f | sort)
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Automated Rivulet Gateway release for ${GITHUB_REF_NAME}" \
+            "${files[@]}" \
+            SHA256SUMS.txt

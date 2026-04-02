@@ -20,6 +20,11 @@ Entry points:
 - PowerShell: `scripts/package.ps1`
 - Bash: `scripts/package.sh`
 
+GitHub Actions:
+
+- CI: `.github/workflows/ci.yml`
+- Release packaging: `.github/workflows/release.yml`
+
 Smoke suites:
 
 - Linux: `packaging/tests/server-smoke.sh`
@@ -36,3 +41,11 @@ Example commands:
 ./scripts/package.sh --target x86_64-unknown-linux-gnu --format tar.gz
 ./scripts/package.sh --target aarch64-unknown-linux-gnu --format rpm
 ```
+
+GitHub CI/CD policy:
+
+- Every push and pull request runs workspace tests on Linux and Windows.
+- CI also builds and smoke-tests Windows x86_64 and Linux x86_64 packages.
+- Tag pushes like `v0.1.0` publish release assets automatically.
+- Linux arm64 packaging is wired for GitHub Actions and runs on `ubuntu-24.04-arm` during manual workflow dispatch.
+- If the repository visibility or runner policy does not allow hosted arm64 runners, replace that job with a self-hosted arm64 runner label.

@@ -16,6 +16,7 @@ VERSION="$(awk '
 TARGET="${TARGET:-}"
 FORMAT="auto"
 PROFILE="release"
+SKIP_BUILD="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,6 +31,10 @@ while [[ $# -gt 0 ]]; do
     --profile)
       PROFILE="$2"
       shift 2
+      ;;
+    --skip-build)
+      SKIP_BUILD="true"
+      shift
       ;;
     *)
       echo "unknown argument: $1" >&2
@@ -59,9 +64,14 @@ if [[ -n "$TARGET" ]]; then
   BUILD_ARGS+=(--target "$TARGET")
 fi
 
-echo "building Rivulet Gateway"
-echo "target=$TARGET format=$FORMAT profile=$PROFILE"
-cargo "${BUILD_ARGS[@]}"
+if [[ "$SKIP_BUILD" != "true" ]]; then
+  echo "building Rivulet Gateway"
+  echo "target=$TARGET format=$FORMAT profile=$PROFILE"
+  cargo "${BUILD_ARGS[@]}"
+else
+  echo "packaging existing build"
+  echo "target=$TARGET format=$FORMAT profile=$PROFILE"
+fi
 
 BINARY_PATH="$REPO_ROOT/target/$TARGET/$PROFILE/gateway-main"
 if [[ ! -f "$BINARY_PATH" ]]; then
@@ -83,6 +93,21 @@ cp "$BINARY_PATH" "$BIN_DIR/gateway"
 cp "$REPO_ROOT/packaging/examples/gateway.toml" "$CONFIG_DIR/gateway.toml"
 cp "$REPO_ROOT/packaging/linux/gateway.service" "$SERVICE_DIR/rivulet-gateway.service"
 cp "$REPO_ROOT/README.md" "$DOC_DIR/README.md"
+
+map_rpm_arch() {
+  case "$1" in
+    x86_64-unknown-linux-gnu)
+      echo "x86_64"
+      ;;
+    aarch64-unknown-linux-gnu)
+      echo "aarch64"
+      ;;
+    *)
+      echo "unsupported rpm target: $1" >&2
+      exit 1
+      ;;
+  esac
+}
 
 case "$FORMAT" in
   dir)
@@ -129,18 +154,3 @@ case "$FORMAT" in
     exit 1
     ;;
 esac
-
-map_rpm_arch() {
-  case "$1" in
-    x86_64-unknown-linux-gnu)
-      echo "x86_64"
-      ;;
-    aarch64-unknown-linux-gnu)
-      echo "aarch64"
-      ;;
-    *)
-      echo "unsupported rpm target: $1" >&2
-      exit 1
-      ;;
-  esac
-}
