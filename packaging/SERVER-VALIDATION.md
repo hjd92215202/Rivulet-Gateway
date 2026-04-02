@@ -21,6 +21,10 @@ Current validation layers:
    File: `packaging/tests/run-linux-validation.sh`
    Runs both steps in order.
 
+4. Release checksum verification
+   File: `packaging/tests/verify-checksums.sh`
+   Verifies published artifacts against `SHA256SUMS`.
+
 Validation expectations:
 
 - `tar.gz` contains:
@@ -40,6 +44,7 @@ Example commands:
 ```bash
 bash ./packaging/tests/run-linux-validation.sh ./dist/x86_64-unknown-linux-gnu/rivulet-gateway-0.1.0.tar.gz
 bash ./packaging/tests/run-linux-validation.sh ./dist/rpmbuild/x86_64-unknown-linux-gnu/RPMS/x86_64/rivulet-gateway-0.1.0-1.x86_64.rpm
+bash ./packaging/tests/verify-checksums.sh ./SHA256SUMS.txt .
 ```
 
 Server prerequisites:

@@ -73,27 +73,7 @@ function Get-HostTarget {
     return $hostLine.Split(":")[1].Trim()
 }
 
-function Get-WorkspaceVersion {
-    $content = Get-Content $script:WorkspaceManifest
-    $inWorkspacePackage = $false
-
-    foreach ($line in $content) {
-        if ($line -match "^\[workspace\.package\]") {
-            $inWorkspacePackage = $true
-            continue
-        }
-        if ($inWorkspacePackage -and $line -match "^\[") {
-            break
-        }
-        if ($inWorkspacePackage -and $line -match '^version\s*=\s*"([^"]+)"') {
-            return $Matches[1]
-        }
-    }
-
-    throw "workspace version not found"
-}
-
-$script:Version = Get-WorkspaceVersion
+$script:Version = & (Join-Path $script:RepoRoot "scripts\get-version.ps1")
 
 if ([string]::IsNullOrWhiteSpace($Target)) {
     $Target = Get-HostTarget

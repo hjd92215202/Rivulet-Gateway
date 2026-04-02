@@ -19,6 +19,7 @@ Entry points:
 
 - PowerShell: `scripts/package.ps1`
 - Bash: `scripts/package.sh`
+- Version lookup: `scripts/get-version.sh`, `scripts/get-version.ps1`
 
 GitHub Actions:
 
@@ -33,6 +34,7 @@ Smoke suites:
 - Artifact validation: `packaging/tests/validate-package.sh`
 - Installed-package smoke: `packaging/tests/install-package.sh`
 - Combined Linux validation: `packaging/tests/run-linux-validation.sh`
+- Checksum verification: `packaging/tests/verify-checksums.sh`
 
 Example commands:
 
