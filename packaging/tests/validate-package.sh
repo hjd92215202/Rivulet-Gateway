@@ -18,24 +18,6 @@ if [[ -z "$WORK_DIR" ]]; then
   WORK_DIR="$(mktemp -d)"
 fi
 
-cleanup() {
-  rm -rf "$WORK_DIR"
-}
-trap cleanup EXIT
-
-case "$ARTIFACT_PATH" in
-  *.tar.gz)
-    validate_tarball "$ARTIFACT_PATH" "$WORK_DIR"
-    ;;
-  *.rpm)
-    validate_rpm "$ARTIFACT_PATH"
-    ;;
-  *)
-    echo "unsupported artifact: $ARTIFACT_PATH" >&2
-    exit 1
-    ;;
-esac
-
 validate_tarball() {
   local artifact_path="$1"
   local work_dir="$2"
@@ -89,3 +71,21 @@ fail_missing() {
   echo "expected rpm entry missing: $path" >&2
   exit 1
 }
+
+cleanup() {
+  rm -rf "$WORK_DIR"
+}
+trap cleanup EXIT
+
+case "$ARTIFACT_PATH" in
+  *.tar.gz)
+    validate_tarball "$ARTIFACT_PATH" "$WORK_DIR"
+    ;;
+  *.rpm)
+    validate_rpm "$ARTIFACT_PATH"
+    ;;
+  *)
+    echo "unsupported artifact: $ARTIFACT_PATH" >&2
+    exit 1
+    ;;
+esac
