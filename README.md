@@ -68,6 +68,7 @@ CI/CD:
 - Linux first-test checklist: `docs/LINUX-SERVER-FIRST-TEST.md`
 - Linux baseline benchmark: `docs/LINUX-BASELINE-BENCHMARK.md`
 - Linux release automation: `docs/LINUX-RELEASE-AUTOMATION.md`
+- Linux systemd validation: `docs/LINUX-SYSTEMD-VALIDATION.md`
 - packaging guide: `packaging/README.md`
 
 Project policy docs:

@@ -31,6 +31,18 @@ linux_package_for_command() {
     python3)
       echo "python3"
       ;;
+    systemctl)
+      echo "systemd"
+      ;;
+    journalctl)
+      echo "systemd"
+      ;;
+    rpm2cpio)
+      echo "rpm"
+      ;;
+    cpio)
+      echo "cpio"
+      ;;
     wrk)
       echo "wrk"
       ;;

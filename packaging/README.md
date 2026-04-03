@@ -63,6 +63,7 @@ GitHub CI/CD policy:
 Server rollout references:
 
 - validation flow: `packaging/SERVER-VALIDATION.md`
+- real-host systemd validation: `docs/LINUX-SYSTEMD-VALIDATION.md`
 
 ## 中文
 
