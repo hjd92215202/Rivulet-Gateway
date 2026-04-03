@@ -177,20 +177,15 @@ bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-0.1.0-1.
 
 ### 4. Optional systemd Smoke
 
-Copy files into system locations:
+Repository-owned automated path:
 
 ```bash
-sudo cp ./usr/bin/gateway /usr/bin/gateway
-sudo mkdir -p /etc/gateway
-sudo cp ./etc/gateway/gateway.toml /etc/gateway/gateway.toml
-sudo cp ./usr/lib/systemd/system/rivulet-gateway.service /etc/systemd/system/rivulet-gateway.service
+bash ./scripts/linux-service-install.sh --tag v0.1.6 --format tar.gz
 ```
 
-Enable and start:
+Then inspect service state:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now rivulet-gateway
 sudo systemctl status rivulet-gateway --no-pager
 ```
 
@@ -204,6 +199,12 @@ Validate traffic:
 
 ```bash
 curl -i -H 'Host: localhost' http://127.0.0.1:8080/
+```
+
+If you want the repository to remove the installed service again:
+
+```bash
+bash ./scripts/linux-service-remove.sh --mode auto
 ```
 
 ### 5. Suggested First-Test Exit Criteria

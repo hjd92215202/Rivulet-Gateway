@@ -31,6 +31,9 @@ linux_package_for_command() {
     python3)
       echo "python3"
       ;;
+    rpm)
+      echo "rpm"
+      ;;
     systemctl)
       echo "systemd"
       ;;

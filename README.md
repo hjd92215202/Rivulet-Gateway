@@ -70,6 +70,7 @@ CI/CD:
 - Linux release automation: `docs/LINUX-RELEASE-AUTOMATION.md`
 - Linux systemd validation: `docs/LINUX-SYSTEMD-VALIDATION.md`
 - Linux upgrade rollback validation: `docs/LINUX-UPGRADE-ROLLBACK-VALIDATION.md`
+- Linux service operations: `docs/LINUX-SERVICE-OPERATIONS.md`
 - packaging guide: `packaging/README.md`
 
 Project policy docs:
