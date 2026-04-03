@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gateway_types::{
     GatewayError, HttpMethod, Protocol, ProxyPolicyOverrides, Result, RouteAuthPolicy,
-    RuntimeSettings,
+    RouteRateLimitKey, RouteRateLimitPolicy, RuntimeSettings,
 };
 use serde::Deserialize;
 
@@ -112,6 +112,8 @@ impl GatewayConfigFile {
             validate_proxy_policy(&route.policy, &format!("route {}", route.name))?;
             // 鉴权配置必须足够明确，避免把“看起来开启了保护”实际却放空。
             validate_route_auth(&route.auth, &format!("route {}", route.name))?;
+            // 限流配置需要成组出现，避免只写一半时语义飘忽。
+            validate_route_rate_limit(&route.rate_limit, &format!("route {}", route.name))?;
         }
 
         Ok(())
@@ -287,6 +289,9 @@ pub struct RouteConfig {
     /// 路由级鉴权入口；默认关闭，只有显式写 token 才会生效。
     #[serde(default)]
     pub auth: RouteAuthConfig,
+    /// 路由级限流入口；默认关闭，主要用于公开页面保护。
+    #[serde(default)]
+    pub rate_limit: RouteRateLimitConfig,
 }
 
 /// 第一版鉴权策略只提供最小可用配置面：
@@ -321,6 +326,55 @@ impl RouteAuthConfig {
             bearer_tokens: self.bearer_tokens.clone(),
             query_tokens: self.query_tokens.clone(),
             query_token_name: self.query_token_name.clone(),
+        }
+    }
+}
+
+/// 第一版限流配置先保持最小面：
+/// 固定窗口、固定请求数、按客户端 IP 计数。
+#[derive(Clone, Debug, Deserialize)]
+pub struct RouteRateLimitConfig {
+    /// 单个时间窗口内允许的最大请求数。
+    pub requests: Option<usize>,
+    /// 时间窗口大小，单位毫秒。
+    pub window_ms: Option<u64>,
+    /// 限流 key 提取方式，默认按客户端 IP。
+    #[serde(default)]
+    pub key: RateLimitKeyConfig,
+}
+
+impl Default for RouteRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            requests: None,
+            window_ms: None,
+            key: RateLimitKeyConfig::default(),
+        }
+    }
+}
+
+impl RouteRateLimitConfig {
+    /// 把配置层转成运行时限流策略。
+    pub fn to_policy(&self) -> RouteRateLimitPolicy {
+        RouteRateLimitPolicy {
+            requests: self.requests,
+            window: self.window_ms.map(Duration::from_millis),
+            key: self.key.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitKeyConfig {
+    #[default]
+    ClientIp,
+}
+
+impl From<RateLimitKeyConfig> for RouteRateLimitKey {
+    fn from(value: RateLimitKeyConfig) -> Self {
+        match value {
+            RateLimitKeyConfig::ClientIp => RouteRateLimitKey::ClientIp,
         }
     }
 }
@@ -525,6 +579,31 @@ fn validate_route_auth(auth: &RouteAuthConfig, scope: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_route_rate_limit(rate_limit: &RouteRateLimitConfig, scope: &str) -> Result<()> {
+    match (rate_limit.requests, rate_limit.window_ms) {
+        (None, None) => Ok(()),
+        (Some(requests), Some(window_ms)) => {
+            if requests == 0 {
+                return Err(GatewayError::InvalidConfig(format!(
+                    "{} rate_limit requests must be greater than 0 when set",
+                    scope
+                )));
+            }
+            if window_ms == 0 {
+                return Err(GatewayError::InvalidConfig(format!(
+                    "{} rate_limit window_ms must be greater than 0 when set",
+                    scope
+                )));
+            }
+            Ok(())
+        }
+        _ => Err(GatewayError::InvalidConfig(format!(
+            "{} rate_limit requests and window_ms must be set together",
+            scope
+        ))),
+    }
+}
+
 fn default_weight() -> u16 {
     1
 }
@@ -628,6 +707,7 @@ mod tests {
                 filters: vec!["request-id".into()],
                 policy: ProxyPolicyConfig::default(),
                 auth: RouteAuthConfig::default(),
+                rate_limit: RouteRateLimitConfig::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -693,6 +773,18 @@ mod tests {
         let error = config.validate().expect_err("config should be invalid");
         match error {
             GatewayError::InvalidConfig(message) => assert!(message.contains("bearer_tokens")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_partial_rate_limit_config() {
+        let mut config = valid_config();
+        config.routes[0].rate_limit.requests = Some(10);
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("set together")),
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -778,6 +870,7 @@ upstream = "api"
         assert!(loaded.upstreams[0].policy.read_timeout_ms.is_none());
         assert_eq!(loaded.routes[0].auth.query_token_name, "access_token");
         assert!(loaded.routes[0].auth.bearer_tokens.is_empty());
+        assert!(loaded.routes[0].rate_limit.requests.is_none());
     }
 
     #[test]
@@ -882,5 +975,55 @@ query_token_name = "share_token"
             vec!["share-secret".to_string()]
         );
         assert_eq!(loaded.routes[0].auth.query_token_name, "share_token");
+    }
+
+    #[test]
+    fn load_from_file_reads_route_rate_limit_policy() {
+        let file_name = format!(
+            "gateway-config-rate-limit-test-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+
+        fs::write(
+            &path,
+            r#"
+[[listeners]]
+name = "edge"
+address = "127.0.0.1:8080"
+protocol = "http1"
+
+[[upstreams]]
+name = "api"
+load_balance = "round_robin"
+
+[[upstreams.endpoints]]
+address = "127.0.0.1:9000"
+
+[[routes]]
+name = "public"
+listener = "edge"
+upstream = "api"
+
+[routes.rate_limit]
+requests = 20
+window_ms = 1000
+key = "client_ip"
+"#,
+        )
+        .expect("write config file");
+
+        let loaded = GatewayConfigFile::load_from_file(&path).expect("config should load");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(loaded.routes[0].rate_limit.requests, Some(20));
+        assert_eq!(loaded.routes[0].rate_limit.window_ms, Some(1000));
+        assert_eq!(
+            loaded.routes[0].rate_limit.key,
+            RateLimitKeyConfig::ClientIp
+        );
     }
 }

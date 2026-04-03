@@ -33,6 +33,8 @@ pub enum GatewayError {
     Unauthorized(String),
     #[error("forbidden: {0}")]
     Forbidden(String),
+    #[error("rate limited: {0}")]
+    RateLimited(String),
 }
 
 pub type Result<T> = std::result::Result<T, GatewayError>;
@@ -216,6 +218,8 @@ pub struct RouteMatch {
     pub proxy_policy: ProxyPolicyOverrides,
     /// 路由命中后的鉴权策略。
     pub auth_policy: RouteAuthPolicy,
+    /// 路由命中后的限流策略。
+    pub rate_limit_policy: RouteRateLimitPolicy,
 }
 
 /// 路由级鉴权策略先保持最小可用集：
@@ -269,6 +273,52 @@ impl RouteAuthPolicy {
             self.query_token_name
         )))
     }
+}
+
+/// 第一版限流策略只做最保守的入口保护：
+/// 按客户端 IP 在固定时间窗口内计数，先解决公开页面和共享入口的基本防刷需求。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteRateLimitPolicy {
+    /// 单个窗口内允许的最大请求数。
+    pub requests: Option<usize>,
+    /// 统计窗口大小。
+    pub window: Option<Duration>,
+    /// 限流 key 的提取方式。
+    pub key: RouteRateLimitKey,
+}
+
+impl Default for RouteRateLimitPolicy {
+    fn default() -> Self {
+        Self {
+            requests: None,
+            window: None,
+            key: RouteRateLimitKey::ClientIp,
+        }
+    }
+}
+
+impl RouteRateLimitPolicy {
+    /// 只有请求数和时间窗口都明确配置时，限流才真正开启。
+    pub fn is_enabled(&self) -> bool {
+        self.requests.is_some() && self.window.is_some()
+    }
+
+    /// 为请求提取稳定的限流 key。
+    /// 第一版先以客户端 IP 为主；如果调用方没有提供远端地址，就回落到固定占位值。
+    pub fn key_for(&self, request: &RequestContext) -> String {
+        match self.key {
+            RouteRateLimitKey::ClientIp => request
+                .client_addr
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|| "unknown-client".into()),
+        }
+    }
+}
+
+/// 当前只开放一类 key，先把行为做稳，再决定是否扩展到 header、token 或其他来源。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouteRateLimitKey {
+    ClientIp,
 }
 
 /// 上游节点描述只保留“如何连过去”所需的最小字段。
@@ -516,5 +566,20 @@ mod tests {
             }
             other => panic!("unexpected error: {:?}", other),
         }
+    }
+
+    #[test]
+    fn route_rate_limit_policy_uses_client_ip_key() {
+        let mut request = RequestContext::new("edge", "example.test", "/public", HttpMethod::Get);
+        request.client_addr = Some("127.0.0.1:8080".parse().expect("socket addr"));
+
+        let policy = RouteRateLimitPolicy {
+            requests: Some(10),
+            window: Some(Duration::from_secs(1)),
+            key: RouteRateLimitKey::ClientIp,
+        };
+
+        assert!(policy.is_enabled());
+        assert_eq!(policy.key_for(&request), "127.0.0.1");
     }
 }

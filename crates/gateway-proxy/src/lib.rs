@@ -1,7 +1,10 @@
 //! proxy 层负责把“路由结果”真正变成一次转发行为。
 //! 第一阶段只支持保守的 HTTP/1.1 代理语义，重点是把边界条件和错误路径做扎实。
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use gateway_admin::AdminService;
 use gateway_filters::FilterRegistry;
@@ -26,6 +29,8 @@ pub struct ProxyService {
     timeouts: RuntimeSettings,
     /// 只读管理面，优先拦截内置管理路径。
     admin: Option<AdminService>,
+    /// 路由级内存限流器，先用于公开页面保护和保守型入口防刷。
+    rate_limiter: RequestRateLimiter,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,6 +51,79 @@ pub struct ProxyConnectionError {
     pub request: Option<RequestContext>,
     /// 错误发生前已经消耗的重试次数。
     pub retries: usize,
+}
+
+/// 第一版限流器只维护固定窗口计数。
+/// 这里刻意不引入外部存储，让生产前期先把语义、观测和错误边界做稳。
+struct RequestRateLimiter {
+    buckets: Mutex<HashMap<String, RateLimitBucket>>,
+}
+
+#[derive(Clone, Debug)]
+struct RateLimitBucket {
+    /// 当前计数窗口的结束时刻。
+    window_ends_at: Instant,
+    /// 当前窗口内已经接收的请求数。
+    observed_requests: usize,
+}
+
+impl RequestRateLimiter {
+    fn new() -> Self {
+        Self {
+            buckets: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn check(
+        &self,
+        route_name: &str,
+        route: &gateway_types::RouteRateLimitPolicy,
+        request: &RequestContext,
+    ) -> Result<()> {
+        if !route.is_enabled() {
+            return Ok(());
+        }
+
+        let allowed_requests = route
+            .requests
+            .expect("enabled rate limit should carry requests");
+        let window = route
+            .window
+            .expect("enabled rate limit should carry window");
+        let bucket_key = format!("{}:{}", route_name, route.key_for(request));
+        let now = Instant::now();
+
+        let mut buckets = self
+            .buckets
+            .lock()
+            .expect("rate limit buckets mutex poisoned");
+        // 当桶数量增长到一定规模时，先清理已经过期的窗口，避免入口保护反过来造成无界状态膨胀。
+        if buckets.len() >= 16_384 {
+            buckets.retain(|_, bucket| bucket.window_ends_at > now);
+        }
+
+        let bucket = buckets
+            .entry(bucket_key)
+            .or_insert_with(|| RateLimitBucket {
+                window_ends_at: now + window,
+                observed_requests: 0,
+            });
+
+        if now >= bucket.window_ends_at {
+            bucket.window_ends_at = now + window;
+            bucket.observed_requests = 0;
+        }
+
+        if bucket.observed_requests >= allowed_requests {
+            return Err(GatewayError::RateLimited(format!(
+                "route {} exceeded {} requests per {:?}",
+                route_name, allowed_requests, window
+            )));
+        }
+
+        bucket.observed_requests += 1;
+        Ok(())
+    }
 }
 
 impl ProxyService {
@@ -71,6 +149,7 @@ impl ProxyService {
             upstreams,
             timeouts,
             admin,
+            rate_limiter: RequestRateLimiter::new(),
         }
     }
 
@@ -83,6 +162,8 @@ impl ProxyService {
         // 当前顺序先保留“请求过滤器 -> 鉴权”，
         // 这样未授权请求也能拿到 request id 等最小观测上下文。
         route.auth_policy.authorize(&request)?;
+        self.rate_limiter
+            .check(&route.route_name, &route.rate_limit_policy, &request)?;
 
         // 纯内存入口只验证选路是否正确，不做真实网络转发。
         let selected = self
@@ -182,6 +263,17 @@ impl ProxyService {
         route
             .auth_policy
             .authorize(&request_context)
+            .map_err(|error| ProxyConnectionError {
+                error,
+                request: Some(request_context.clone()),
+                retries: 0,
+            })?;
+        self.rate_limiter
+            .check(
+                &route.route_name,
+                &route.rate_limit_policy,
+                &request_context,
+            )
             .map_err(|error| ProxyConnectionError {
                 error,
                 request: Some(request_context.clone()),
@@ -1082,6 +1174,7 @@ fn status_and_reason_for_error(error: &GatewayError) -> (u16, &'static str) {
         GatewayError::RouteNotMatched => (404_u16, "Not Found"),
         GatewayError::Unauthorized(_) => (401_u16, "Unauthorized"),
         GatewayError::Forbidden(_) => (403_u16, "Forbidden"),
+        GatewayError::RateLimited(_) => (429_u16, "Too Many Requests"),
         GatewayError::Unsupported(_) => (501_u16, "Not Implemented"),
         GatewayError::Protocol(_)
         | GatewayError::InvalidConfig(_)
@@ -1205,6 +1298,7 @@ mod tests {
                 filters: vec!["request-id".into()],
                 policy: Default::default(),
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1284,6 +1378,7 @@ mod tests {
                     query_tokens: Vec::new(),
                     query_token_name: "access_token".into(),
                 },
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1385,6 +1480,7 @@ mod tests {
                     query_tokens: vec!["share-secret".into()],
                     query_token_name: "share_token".into(),
                 },
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1433,6 +1529,186 @@ mod tests {
             outcome.request.request_id.as_deref(),
             Some("edge:example.test:/share/view")
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_request_when_route_rate_limit_is_exceeded() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+        let backend_accept_count = Arc::new(AtomicUsize::new(0));
+        let backend_accept_count_clone = Arc::clone(&backend_accept_count);
+
+        let backend_task = tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            backend_accept_count_clone.fetch_add(1, Ordering::SeqCst);
+            let _request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                .await
+                .expect("read backend request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("write backend response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "public".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/public".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec!["request-id".into()],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: gateway_config::RouteRateLimitConfig {
+                    requests: Some(1),
+                    window_ms: Some(1_000),
+                    key: gateway_config::RateLimitKeyConfig::ClientIp,
+                },
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = Arc::new(ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        ));
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let mut outcomes = Vec::new();
+            for _ in 0..2 {
+                let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+                let service = Arc::clone(&service);
+                outcomes.push(
+                    service
+                        .handle_connection("edge", &mut downstream, client_addr)
+                        .await,
+                );
+            }
+            outcomes
+        });
+
+        for _ in 0..2 {
+            let mut client = TcpStream::connect(gateway_addr)
+                .await
+                .expect("connect gateway");
+            client
+                .write_all(
+                    b"GET /public HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .expect("write request");
+        }
+
+        let outcomes = server.await.expect("gateway task");
+        assert!(outcomes[0].is_ok());
+        match &outcomes[1] {
+            Err(ProxyConnectionError {
+                error: GatewayError::RateLimited(message),
+                retries,
+                ..
+            }) => {
+                assert!(message.contains("exceeded"));
+                assert_eq!(*retries, 0);
+            }
+            other => panic!("expected rate limited rejection, got {:?}", other),
+        }
+
+        backend_task.await.expect("backend task");
+        assert_eq!(backend_accept_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn allows_request_after_rate_limit_window_resets() {
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "public".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/public".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: gateway_config::RouteRateLimitConfig {
+                    requests: Some(1),
+                    window_ms: Some(30),
+                    key: gateway_config::RateLimitKeyConfig::ClientIp,
+                },
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let mut request = RequestContext::new("edge", "example.test", "/public", HttpMethod::Get);
+        request.client_addr = Some("127.0.0.1:18080".parse().expect("socket addr"));
+
+        let first = service
+            .handle(request.clone())
+            .await
+            .expect("first request");
+        assert_eq!(first.status_code, 200);
+
+        let second = service
+            .handle(request.clone())
+            .await
+            .expect_err("second request should be limited");
+        match second {
+            GatewayError::RateLimited(message) => assert!(message.contains("exceeded")),
+            other => panic!("expected rate limited error, got {:?}", other),
+        }
+
+        sleep(Duration::from_millis(45)).await;
+
+        let third = service.handle(request).await.expect("window should reset");
+        assert_eq!(third.status_code, 200);
     }
 
     #[tokio::test]
@@ -1631,6 +1907,7 @@ mod tests {
                 filters: vec![],
                 policy: Default::default(),
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1745,6 +2022,7 @@ mod tests {
                 filters: vec![],
                 policy: Default::default(),
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1893,6 +2171,7 @@ mod tests {
                 filters: vec![],
                 policy: Default::default(),
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1980,6 +2259,7 @@ mod tests {
                 filters: vec![],
                 policy: Default::default(),
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2075,6 +2355,7 @@ mod tests {
                 filters: vec![],
                 policy: Default::default(),
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2167,6 +2448,7 @@ mod tests {
                 filters: vec![],
                 policy: Default::default(),
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2320,6 +2602,7 @@ mod tests {
                 filters: vec![],
                 policy: Default::default(),
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2425,6 +2708,7 @@ mod tests {
                 filters: vec![],
                 policy: ProxyPolicyConfig::default(),
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2522,6 +2806,7 @@ mod tests {
                     retry_attempts: Some(1),
                 },
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2629,6 +2914,7 @@ mod tests {
                     retry_attempts: None,
                 },
                 auth: Default::default(),
+                rate_limit: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2699,6 +2985,13 @@ mod tests {
         let bytes = error_response(&GatewayError::Unsupported("expect header".into()));
         let text = String::from_utf8(bytes).expect("utf-8 response");
         assert!(text.starts_with("HTTP/1.1 501 Not Implemented"));
+    }
+
+    #[test]
+    fn error_response_maps_rate_limited_to_429() {
+        let bytes = error_response(&GatewayError::RateLimited("public route".into()));
+        let text = String::from_utf8(bytes).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 429 Too Many Requests"));
     }
 
     #[tokio::test]

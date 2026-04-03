@@ -31,6 +31,8 @@ Current kernel cut:
 - read-only admin UI workspace member with native HTML/CSS/JS assets
 - strongly typed config model
 - route matching core
+- route-level auth entry with static bearer and query token policies
+- route-level in-memory fixed-window rate limiting
 - filter chain abstraction
 - upstream registry with round-robin selection
 - minimal HTTP/1.1 request parser

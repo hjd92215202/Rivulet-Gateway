@@ -8,11 +8,12 @@ This document maps the requested gateway capabilities to the current repository 
 
 - Auth entry: first conservative cut is available now through route-level static bearer token and query token policies
 - Route aggregation: basic capability is already available now through listener + host + path prefix + method matching into upstream routing
+- Rate limiting and public-page protection: first conservative cut is available now through route-level in-memory fixed-window limiting keyed by client IP
 
 ### Not complete yet
 
 - Shared-access isolation: not complete yet; the next step is to evolve query-token entry into scoped share policies with explicit route and resource boundaries
-- Rate limiting and public-page protection: not complete yet; this depends on stabilizing key extraction, counter semantics, and rejection policy after the auth entry layer
+- Rate limiting and public-page protection: the first cut is available, but richer key extraction, distributed counters, and stronger abuse heuristics are not complete yet
 
 ### Recommended milestone mapping
 
@@ -24,8 +25,8 @@ This document maps the requested gateway capabilities to the current repository 
 
 - no external identity provider integration yet
 - no dynamic credential storage yet
-- no rate-limit counter store yet
-- no public-route abuse heuristics yet
+- no distributed rate-limit counter store yet
+- no advanced public-route abuse heuristics yet
 
 The current priority remains: keep the kernel narrow, correct, observable, and operable before widening the policy surface.
 
@@ -37,11 +38,12 @@ The current priority remains: keep the kernel narrow, correct, observable, and o
 
 - 鉴权入口：现在已经具备第一版保守能力，可在路由级使用静态 Bearer Token 和 Query Token 做入口保护
 - 路由聚合：基础能力现在就可用，已经支持 listener + host + path prefix + method 到 upstream 的路由聚合
+- 限流与公开页面保护：现在已经具备第一版保守能力，可在路由级按客户端 IP 启用内存固定窗口限流
 
 ### 还没完整具备
 
 - 分享访问隔离：还没完整具备；下一步会在 query token 入口之上继续做带作用域的分享策略和明确的路由、资源边界
-- 限流与公开页面保护：还没完整具备；需要先把鉴权入口后的 key 提取、计数语义和拒绝策略做稳
+- 限流与公开页面保护：第一版已经可用，但更丰富的 key 提取、分布式计数和更强的公开页滥用防护还没完成
 
 ### 建议按里程碑理解
 
@@ -53,7 +55,7 @@ The current priority remains: keep the kernel narrow, correct, observable, and o
 
 - 还没有接入外部身份提供方
 - 还没有动态凭据存储
-- 还没有限流计数存储
-- 还没有公开页面滥用防护启发式
+- 还没有分布式限流计数存储
+- 还没有更高级的公开页面滥用防护启发式
 
 当前优先级仍然是：在扩大策略面之前，先把内核做窄、做稳、做可观测、做可运维。

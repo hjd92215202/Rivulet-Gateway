@@ -53,3 +53,13 @@ filters = ["request-id", "access-log"]
 
 [routes.policy]
 read_timeout_ms = 2500
+
+[routes.auth]
+bearer_tokens = ["dev-gateway-token"]
+query_tokens = ["dev-share-token"]
+query_token_name = "share_token"
+
+[routes.rate_limit]
+requests = 120
+window_ms = 1000
+key = "client_ip"
