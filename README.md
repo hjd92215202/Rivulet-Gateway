@@ -47,6 +47,7 @@ Current limits:
 - one request per connection
 - `Content-Length` request bodies only
 - no chunked request support yet
+- no `Expect: 100-continue` support yet
 - no TLS yet
 - `worker_threads` config is not yet wired into a custom Tokio runtime
 - Linux package and RPM flow are scaffolded, but native target build hosts are still preferred

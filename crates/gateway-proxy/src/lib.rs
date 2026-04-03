@@ -749,13 +749,19 @@ impl HttpRequest {
                 "request body exceeds configured maximum size".into(),
             ));
         }
-        let mut body = buffer[(header_end + 4)..].to_vec();
 
         if header_has_transfer_encoding(&headers) {
             return Err(GatewayError::Unsupported(
                 "transfer-encoding is not supported in the first kernel cut".into(),
             ));
         }
+        if header_has_expect_100_continue(&headers) {
+            return Err(GatewayError::Unsupported(
+                "expect: 100-continue is not supported in the first kernel cut".into(),
+            ));
+        }
+
+        let mut body = buffer[(header_end + 4)..].to_vec();
 
         if body.len() < content_length {
             let remaining = content_length - body.len();
@@ -771,7 +777,10 @@ impl HttpRequest {
                 .map_err(|err| GatewayError::Io(format!("read request body: {}", err)))?;
             body.extend_from_slice(&extra);
         } else if body.len() > content_length {
-            body.truncate(content_length);
+            return Err(GatewayError::Unsupported(
+                "persistent downstream requests beyond one request per connection are not supported in the first kernel cut"
+                    .into(),
+            ));
         }
 
         // HTTP/1.1 的 Host 头是强约束，缺失时直接拒绝，
@@ -960,6 +969,15 @@ fn header_has_transfer_encoding(headers: &[(String, String)]) -> bool {
     headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
+}
+
+fn header_has_expect_100_continue(headers: &[(String, String)]) -> bool {
+    headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("expect")
+            && value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("100-continue"))
+    })
 }
 
 fn response_connection_close(version: &str, headers: &[(String, String)]) -> bool {
@@ -2468,6 +2486,13 @@ mod tests {
         assert!(text.starts_with("HTTP/1.1 404 Not Found"));
     }
 
+    #[test]
+    fn error_response_maps_unsupported_feature_to_501() {
+        let bytes = error_response(&GatewayError::Unsupported("expect header".into()));
+        let text = String::from_utf8(bytes).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 501 Not Implemented"));
+    }
+
     #[tokio::test]
     async fn rejects_duplicate_host_headers() {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -2589,6 +2614,64 @@ mod tests {
                 assert!(message.contains("body exceeds"));
             }
             other => panic!("expected body limit error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_expect_100_continue_request() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\nhello",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Unsupported(message)) => {
+                assert!(message.contains("100-continue"));
+            }
+            other => panic!("expected expect header rejection, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_multiple_downstream_requests_in_one_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"GET /one HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\nGET /two HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Unsupported(message)) => {
+                assert!(message.contains("one request per connection"));
+            }
+            other => panic!("expected downstream pipelining rejection, got {:?}", other),
         }
     }
 
