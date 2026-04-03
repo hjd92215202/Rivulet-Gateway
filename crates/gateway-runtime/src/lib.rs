@@ -408,6 +408,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -471,6 +472,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -532,6 +534,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -601,6 +604,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -664,6 +668,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),

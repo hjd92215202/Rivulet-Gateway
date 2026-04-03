@@ -32,6 +32,7 @@ impl Router {
             // 璺敱鍛戒腑鏃跺氨鎶婅矾鐢卞眰鐨勭瓥鐣ユ惡甯︿笅鍘伙紝
             // 杩欐牱浠ｇ悊涓婚摼璺笉鐢ㄥ啀鍥炲埌閰嶇疆鏁存爲閲嶆柊鏌ユ壘銆?
             proxy_policy: route.policy.to_overrides(),
+            auth_policy: route.auth.to_policy(),
         })
     }
 }
@@ -95,6 +96,7 @@ mod tests {
                     upstream: "api-cluster".into(),
                     filters: vec![],
                     policy: Default::default(),
+                    auth: Default::default(),
                 },
                 RouteConfig {
                     name: "api".into(),
@@ -109,6 +111,7 @@ mod tests {
                         read_timeout_ms: Some(1500),
                         retry_attempts: Some(3),
                     },
+                    auth: Default::default(),
                 },
             ],
             upstreams: vec![UpstreamConfig {
@@ -135,6 +138,7 @@ mod tests {
         assert_eq!(matched.route_name, "api");
         assert_eq!(matched.upstream_name, "api-cluster");
         assert_eq!(matched.proxy_policy.upstream_retry_attempts, Some(3));
+        assert!(!matched.auth_policy.is_enabled());
     }
 
     #[test]

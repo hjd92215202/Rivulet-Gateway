@@ -29,6 +29,10 @@ pub enum GatewayError {
     Protocol(String),
     #[error("unsupported feature: {0}")]
     Unsupported(String),
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 }
 
 pub type Result<T> = std::result::Result<T, GatewayError>;
@@ -210,6 +214,61 @@ pub struct RouteMatch {
     pub filter_names: Vec<String>,
     /// 路由层对上游超时和重试的可选覆盖策略。
     pub proxy_policy: ProxyPolicyOverrides,
+    /// 路由命中后的鉴权策略。
+    pub auth_policy: RouteAuthPolicy,
+}
+
+/// 路由级鉴权策略先保持最小可用集：
+/// Bearer token 负责“统一入口鉴权”，query token 负责“分享链接/公开页保护”这类受控放行。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteAuthPolicy {
+    /// 允许通过 `Authorization: Bearer <token>` 访问的静态 token 列表。
+    pub bearer_tokens: Vec<String>,
+    /// 允许通过 query string 放行的静态 token 列表。
+    pub query_tokens: Vec<String>,
+    /// query token 使用的参数名，默认保守地使用 `access_token`。
+    pub query_token_name: String,
+}
+
+impl Default for RouteAuthPolicy {
+    fn default() -> Self {
+        Self {
+            bearer_tokens: Vec::new(),
+            query_tokens: Vec::new(),
+            query_token_name: "access_token".into(),
+        }
+    }
+}
+
+impl RouteAuthPolicy {
+    /// 只要没有配置任何 token，这条路由就视为“未开启鉴权”。
+    pub fn is_enabled(&self) -> bool {
+        !self.bearer_tokens.is_empty() || !self.query_tokens.is_empty()
+    }
+
+    /// 第一版先做确定性最强的静态 token 匹配，不引入外部状态或复杂依赖。
+    pub fn authorize(&self, request: &RequestContext) -> Result<()> {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+
+        if let Some(token) = request.bearer_token() {
+            if self.bearer_tokens.iter().any(|item| item == token) {
+                return Ok(());
+            }
+        }
+
+        if let Some(token) = request.query_value(&self.query_token_name) {
+            if self.query_tokens.iter().any(|item| item == token) {
+                return Ok(());
+            }
+        }
+
+        Err(GatewayError::Unauthorized(format!(
+            "route requires a valid bearer token or {} query token",
+            self.query_token_name
+        )))
+    }
 }
 
 /// 上游节点描述只保留“如何连过去”所需的最小字段。
@@ -418,5 +477,44 @@ mod tests {
         assert_eq!(request.bearer_token(), Some("secret-token"));
         assert_eq!(request.query_value("token"), Some("abc123"));
         assert_eq!(request.query_value("missing"), None);
+    }
+
+    #[test]
+    fn route_auth_policy_accepts_matching_bearer_or_query_token() {
+        let mut request =
+            RequestContext::new("edge", "example.test", "/share/view", HttpMethod::Get);
+        request.headers = vec![("Authorization".into(), "Bearer gateway-secret".into())];
+        request.query = Some("access_token=share-secret".into());
+
+        let policy = RouteAuthPolicy {
+            bearer_tokens: vec!["gateway-secret".into()],
+            query_tokens: vec!["share-secret".into()],
+            query_token_name: "access_token".into(),
+        };
+
+        assert!(policy.authorize(&request).is_ok());
+
+        request.headers.clear();
+        assert!(policy.authorize(&request).is_ok());
+    }
+
+    #[test]
+    fn route_auth_policy_rejects_request_without_valid_token() {
+        let request = RequestContext::new("edge", "example.test", "/private", HttpMethod::Get);
+        let policy = RouteAuthPolicy {
+            bearer_tokens: vec!["gateway-secret".into()],
+            query_tokens: Vec::new(),
+            query_token_name: "access_token".into(),
+        };
+
+        let error = policy
+            .authorize(&request)
+            .expect_err("request should be rejected");
+        match error {
+            GatewayError::Unauthorized(message) => {
+                assert!(message.contains("route requires"));
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
     }
 }

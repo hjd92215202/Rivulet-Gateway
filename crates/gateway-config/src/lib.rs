@@ -6,7 +6,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use gateway_types::{
-    GatewayError, HttpMethod, Protocol, ProxyPolicyOverrides, Result, RuntimeSettings,
+    GatewayError, HttpMethod, Protocol, ProxyPolicyOverrides, Result, RouteAuthPolicy,
+    RuntimeSettings,
 };
 use serde::Deserialize;
 
@@ -109,6 +110,8 @@ impl GatewayConfigFile {
             }
             // 路由级策略拥有更高优先级，但非法值依旧应该在启动期拒绝。
             validate_proxy_policy(&route.policy, &format!("route {}", route.name))?;
+            // 鉴权配置必须足够明确，避免把“看起来开启了保护”实际却放空。
+            validate_route_auth(&route.auth, &format!("route {}", route.name))?;
         }
 
         Ok(())
@@ -281,6 +284,45 @@ pub struct RouteConfig {
     /// 路由层可选覆盖的 upstream 策略。
     #[serde(default)]
     pub policy: ProxyPolicyConfig,
+    /// 路由级鉴权入口；默认关闭，只有显式写 token 才会生效。
+    #[serde(default)]
+    pub auth: RouteAuthConfig,
+}
+
+/// 第一版鉴权策略只提供最小可用配置面：
+/// Bearer token 用于入口保护，query token 用于分享链接和公开页限域放行。
+#[derive(Clone, Debug, Deserialize)]
+pub struct RouteAuthConfig {
+    /// 允许通过 `Authorization: Bearer <token>` 访问的静态 token 列表。
+    #[serde(default)]
+    pub bearer_tokens: Vec<String>,
+    /// 允许通过 query string 访问的静态 token 列表。
+    #[serde(default)]
+    pub query_tokens: Vec<String>,
+    /// query token 的参数名。
+    #[serde(default = "default_auth_query_token_name")]
+    pub query_token_name: String,
+}
+
+impl Default for RouteAuthConfig {
+    fn default() -> Self {
+        Self {
+            bearer_tokens: Vec::new(),
+            query_tokens: Vec::new(),
+            query_token_name: default_auth_query_token_name(),
+        }
+    }
+}
+
+impl RouteAuthConfig {
+    /// 配置层在这里转换成运行时共享策略，避免代理层直接依赖反序列化细节。
+    pub fn to_policy(&self) -> RouteAuthPolicy {
+        RouteAuthPolicy {
+            bearer_tokens: self.bearer_tokens.clone(),
+            query_tokens: self.query_tokens.clone(),
+            query_token_name: self.query_token_name.clone(),
+        }
+    }
 }
 
 /// 策略覆盖层只暴露真正会影响代理主路径的几个字段。
@@ -450,6 +492,39 @@ fn validate_proxy_policy(policy: &ProxyPolicyConfig, scope: &str) -> Result<()> 
     Ok(())
 }
 
+fn validate_route_auth(auth: &RouteAuthConfig, scope: &str) -> Result<()> {
+    if auth.query_token_name.trim().is_empty() {
+        return Err(GatewayError::InvalidConfig(format!(
+            "{} auth query_token_name must not be empty",
+            scope
+        )));
+    }
+
+    if auth
+        .bearer_tokens
+        .iter()
+        .any(|token| token.trim().is_empty())
+    {
+        return Err(GatewayError::InvalidConfig(format!(
+            "{} auth bearer_tokens must not contain empty values",
+            scope
+        )));
+    }
+
+    if auth
+        .query_tokens
+        .iter()
+        .any(|token| token.trim().is_empty())
+    {
+        return Err(GatewayError::InvalidConfig(format!(
+            "{} auth query_tokens must not contain empty values",
+            scope
+        )));
+    }
+
+    Ok(())
+}
+
 fn default_weight() -> u16 {
     1
 }
@@ -526,6 +601,10 @@ fn default_health_check_unhealthy_threshold() -> u32 {
     2
 }
 
+fn default_auth_query_token_name() -> String {
+    "access_token".into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +627,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec!["request-id".into()],
                 policy: ProxyPolicyConfig::default(),
+                auth: RouteAuthConfig::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -601,6 +681,18 @@ mod tests {
         let error = config.validate().expect_err("config should be invalid");
         match error {
             GatewayError::InvalidConfig(message) => assert!(message.contains("retry_attempts")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_empty_auth_token() {
+        let mut config = valid_config();
+        config.routes[0].auth.bearer_tokens = vec!["".into()];
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("bearer_tokens")),
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -684,6 +776,8 @@ upstream = "api"
         assert_eq!(loaded.upstreams[0].endpoints[0].weight, 1);
         assert!(loaded.routes[0].policy.retry_attempts.is_none());
         assert!(loaded.upstreams[0].policy.read_timeout_ms.is_none());
+        assert_eq!(loaded.routes[0].auth.query_token_name, "access_token");
+        assert!(loaded.routes[0].auth.bearer_tokens.is_empty());
     }
 
     #[test]
@@ -735,5 +829,58 @@ read_timeout_ms = 800
         assert_eq!(loaded.upstreams[0].policy.read_timeout_ms, Some(2_200));
         assert_eq!(loaded.upstreams[0].policy.retry_attempts, Some(3));
         assert_eq!(loaded.routes[0].policy.read_timeout_ms, Some(800));
+    }
+
+    #[test]
+    fn load_from_file_reads_route_auth_policy() {
+        let file_name = format!(
+            "gateway-config-auth-test-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+
+        fs::write(
+            &path,
+            r#"
+[[listeners]]
+name = "edge"
+address = "127.0.0.1:8080"
+protocol = "http1"
+
+[[upstreams]]
+name = "api"
+load_balance = "round_robin"
+
+[[upstreams.endpoints]]
+address = "127.0.0.1:9000"
+
+[[routes]]
+name = "private"
+listener = "edge"
+upstream = "api"
+
+[routes.auth]
+bearer_tokens = ["gateway-secret"]
+query_tokens = ["share-secret"]
+query_token_name = "share_token"
+"#,
+        )
+        .expect("write config file");
+
+        let loaded = GatewayConfigFile::load_from_file(&path).expect("config should load");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(
+            loaded.routes[0].auth.bearer_tokens,
+            vec!["gateway-secret".to_string()]
+        );
+        assert_eq!(
+            loaded.routes[0].auth.query_tokens,
+            vec!["share-secret".to_string()]
+        );
+        assert_eq!(loaded.routes[0].auth.query_token_name, "share_token");
     }
 }

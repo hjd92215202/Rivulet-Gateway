@@ -80,6 +80,9 @@ impl ProxyService {
         self.filters
             .run_before(&route.filter_names, &mut request)
             .await?;
+        // 当前顺序先保留“请求过滤器 -> 鉴权”，
+        // 这样未授权请求也能拿到 request id 等最小观测上下文。
+        route.auth_policy.authorize(&request)?;
 
         // 纯内存入口只验证选路是否正确，不做真实网络转发。
         let selected = self
@@ -171,6 +174,14 @@ impl ProxyService {
         self.filters
             .run_before(&route.filter_names, &mut request_context)
             .await
+            .map_err(|error| ProxyConnectionError {
+                error,
+                request: Some(request_context.clone()),
+                retries: 0,
+            })?;
+        route
+            .auth_policy
+            .authorize(&request_context)
             .map_err(|error| ProxyConnectionError {
                 error,
                 request: Some(request_context.clone()),
@@ -1069,6 +1080,8 @@ pub fn status_code_for_error(error: &GatewayError) -> u16 {
 fn status_and_reason_for_error(error: &GatewayError) -> (u16, &'static str) {
     match error {
         GatewayError::RouteNotMatched => (404_u16, "Not Found"),
+        GatewayError::Unauthorized(_) => (401_u16, "Unauthorized"),
+        GatewayError::Forbidden(_) => (403_u16, "Forbidden"),
         GatewayError::Unsupported(_) => (501_u16, "Not Implemented"),
         GatewayError::Protocol(_)
         | GatewayError::InvalidConfig(_)
@@ -1093,7 +1106,7 @@ mod tests {
     };
     use gateway_config::{
         EndpointConfig, GatewayConfigFile, ListenerConfig, LoadBalanceConfig, ProtocolConfig,
-        ProxyPolicyConfig, RouteConfig, RuntimeConfig, UpstreamConfig,
+        ProxyPolicyConfig, RouteAuthConfig, RouteConfig, RuntimeConfig, UpstreamConfig,
     };
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::{Duration, sleep, timeout};
@@ -1191,6 +1204,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec!["request-id".into()],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1245,6 +1259,180 @@ mod tests {
         let text = String::from_utf8(response).expect("utf-8 response");
         assert!(text.starts_with("HTTP/1.1 200 OK"));
         assert!(text.ends_with("hello"));
+    }
+
+    #[tokio::test]
+    async fn rejects_request_without_valid_route_auth_token() {
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "private".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/private".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec!["request-id".into()],
+                policy: Default::default(),
+                auth: RouteAuthConfig {
+                    bearer_tokens: vec!["gateway-secret".into()],
+                    query_tokens: Vec::new(),
+                    query_token_name: "access_token".into(),
+                },
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /private HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task");
+        match outcome {
+            Err(ProxyConnectionError {
+                error: GatewayError::Unauthorized(message),
+                request: Some(request),
+                retries,
+            }) => {
+                assert_eq!(
+                    request.request_id.as_deref(),
+                    Some("edge:example.test:/private")
+                );
+                assert!(message.contains("valid bearer token"));
+                assert_eq!(retries, 0);
+            }
+            other => panic!(
+                "expected unauthorized route auth rejection, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn allows_request_with_valid_query_share_token() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                .await
+                .expect("read backend request");
+            assert_eq!(request.path_for_route(), "/share/view");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("write backend response");
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "share".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/share/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec!["request-id".into()],
+                policy: Default::default(),
+                auth: RouteAuthConfig {
+                    bearer_tokens: Vec::new(),
+                    query_tokens: vec!["share-secret".into()],
+                    query_token_name: "share_token".into(),
+                },
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /share/view?share_token=share-secret HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task").expect("proxy request");
+        assert_eq!(outcome.response.status_code, 200);
+        assert_eq!(
+            outcome.request.request_id.as_deref(),
+            Some("edge:example.test:/share/view")
+        );
     }
 
     #[tokio::test]
@@ -1442,6 +1630,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1555,6 +1744,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1702,6 +1892,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1788,6 +1979,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1882,6 +2074,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1973,6 +2166,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2125,6 +2319,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: Default::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2229,6 +2424,7 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec![],
                 policy: ProxyPolicyConfig::default(),
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2325,6 +2521,7 @@ mod tests {
                     read_timeout_ms: None,
                     retry_attempts: Some(1),
                 },
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2431,6 +2628,7 @@ mod tests {
                     read_timeout_ms: Some(40),
                     retry_attempts: None,
                 },
+                auth: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
