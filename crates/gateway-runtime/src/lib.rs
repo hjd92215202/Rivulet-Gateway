@@ -4,6 +4,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use gateway_admin::{
+    AdminListener, AdminOverview, AdminOverviewProvider, AdminRoute, AdminRuntime, AdminService,
+    AdminStats, AdminSummary, AdminUpstream,
+};
 use gateway_config::GatewayConfigFile;
 use gateway_observability::{AccessLogRecord, RuntimeStats, RuntimeStatsSnapshot, emit_access_log};
 use gateway_proxy::{ProxyService, status_code_for_error};
@@ -32,12 +36,23 @@ impl GatewayApp {
         let filters = gateway_filters::FilterRegistry::with_defaults();
         let upstreams = UpstreamRegistry::from_config(&config);
         let runtime_settings = config.runtime_settings();
+        let stats = Arc::new(RuntimeStats::default());
+        let admin = AdminService::new(Arc::new(RuntimeAdminOverviewProvider {
+            config: config.clone(),
+            stats: Arc::clone(&stats),
+        }));
 
         Self {
             config,
-            proxy: ProxyService::new(router, filters, upstreams.clone(), runtime_settings),
+            proxy: ProxyService::with_admin(
+                router,
+                filters,
+                upstreams.clone(),
+                runtime_settings,
+                Some(admin),
+            ),
             upstreams,
-            stats: Arc::new(RuntimeStats::default()),
+            stats,
         }
     }
 
@@ -122,6 +137,83 @@ impl GatewayApp {
         .await;
 
         Ok(())
+    }
+}
+
+struct RuntimeAdminOverviewProvider {
+    /// 管理面读取的是启动时生效的配置快照，而不是外部可变状态。
+    config: GatewayConfigFile,
+    /// 指标通过原子快照读取，保证管理面只读且不会反向影响主链路。
+    stats: Shared<RuntimeStats>,
+}
+
+impl AdminOverviewProvider for RuntimeAdminOverviewProvider {
+    fn overview(&self) -> AdminOverview {
+        let stats = self.stats.snapshot();
+        let runtime = self.config.runtime_settings();
+
+        AdminOverview {
+            summary: AdminSummary {
+                listeners: self.config.listeners.len(),
+                routes: self.config.routes.len(),
+                upstreams: self.config.upstreams.len(),
+                worker_threads: self.config.runtime.worker_threads,
+            },
+            runtime: AdminRuntime {
+                graceful_shutdown_secs: runtime.graceful_shutdown.as_secs(),
+                downstream_read_timeout_ms: runtime.downstream_read_timeout.as_millis(),
+                upstream_connect_timeout_ms: runtime.upstream_connect_timeout.as_millis(),
+                upstream_read_timeout_ms: runtime.upstream_read_timeout.as_millis(),
+                upstream_retry_attempts: runtime.upstream_retry_attempts,
+                upstream_idle_pool_size: runtime.upstream_idle_pool_size,
+            },
+            stats: AdminStats {
+                total_requests: stats.total_requests,
+                completed_requests: stats.completed_requests,
+                active_connections: stats.active_connections,
+                successful_responses: stats.successful_responses,
+                client_error_responses: stats.client_error_responses,
+                server_error_responses: stats.server_error_responses,
+                upstream_retries: stats.upstream_retries,
+            },
+            listeners: self
+                .config
+                .listeners
+                .iter()
+                .map(|listener| AdminListener {
+                    name: listener.name.clone(),
+                    address: listener.address.clone(),
+                    protocol: listener.protocol.as_str().to_string(),
+                })
+                .collect(),
+            routes: self
+                .config
+                .routes
+                .iter()
+                .map(|route| AdminRoute {
+                    name: route.name.clone(),
+                    listener: route.listener.clone(),
+                    hosts: route.hosts.clone(),
+                    path_prefixes: route.path_prefixes.clone(),
+                    methods: route.methods.iter().map(ToString::to_string).collect(),
+                    upstream: route.upstream.clone(),
+                })
+                .collect(),
+            upstreams: self
+                .config
+                .upstreams
+                .iter()
+                .map(|upstream| AdminUpstream {
+                    name: upstream.name.clone(),
+                    load_balance: upstream.load_balance.as_str().to_string(),
+                    endpoints: upstream
+                        .endpoints
+                        .iter()
+                        .map(|endpoint| format!("{} (w={})", endpoint.address, endpoint.weight))
+                        .collect(),
+                })
+                .collect(),
+        }
     }
 }
 
@@ -551,6 +643,73 @@ mod tests {
 
         server.await.expect("server task").expect("gateway ok");
         assert!(started_at.elapsed() >= Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn run_until_serves_admin_overview_on_loopback() {
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(250)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(40)).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", listener_port))
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /__admin/api/overview HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+        assert!(text.contains("application/json; charset=utf-8"));
+        assert!(text.contains("\"listeners\":1"));
+        assert!(text.contains("\"routes\":["));
+
+        server.await.expect("server task").expect("gateway ok");
     }
 
     fn reserve_port() -> u16 {

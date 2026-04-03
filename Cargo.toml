@@ -2,6 +2,7 @@
 members = [
     "cmd/gateway-bench",
     "cmd/gateway-main",
+    "crates/gateway-admin",
     "crates/gateway-config",
     "crates/gateway-filters",
     "crates/gateway-observability",

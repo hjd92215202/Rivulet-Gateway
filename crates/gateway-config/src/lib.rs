@@ -1,5 +1,6 @@
 //! 配置层负责把外部文本配置收敛成强类型结构。
 //! 第一阶段暂时只支持 TOML，并且在加载时尽量把明显错误提前暴露出来。
+use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -247,6 +248,16 @@ impl From<ProtocolConfig> for Protocol {
     }
 }
 
+impl ProtocolConfig {
+    /// 给观测、管理面和文档摘要提供稳定的协议文本。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProtocolConfig::Http1 => "http1",
+            ProtocolConfig::Http2 => "http2",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct RouteConfig {
     /// 路由名用于运维定位。
@@ -333,6 +344,27 @@ impl From<HttpMethodConfig> for HttpMethod {
     }
 }
 
+impl HttpMethodConfig {
+    /// 把配置层方法枚举转成稳定的大写方法名，便于日志和管理面直接使用。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HttpMethodConfig::GET => "GET",
+            HttpMethodConfig::POST => "POST",
+            HttpMethodConfig::PUT => "PUT",
+            HttpMethodConfig::PATCH => "PATCH",
+            HttpMethodConfig::DELETE => "DELETE",
+            HttpMethodConfig::HEAD => "HEAD",
+            HttpMethodConfig::OPTIONS => "OPTIONS",
+        }
+    }
+}
+
+impl fmt::Display for HttpMethodConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct UpstreamConfig {
     /// upstream 集群名。
@@ -373,6 +405,15 @@ pub enum LoadBalanceConfig {
     /// 轮询是第一阶段最简单也最稳定的策略。
     #[default]
     RoundRobin,
+}
+
+impl LoadBalanceConfig {
+    /// 当前先把管理面和摘要输出统一成 snake_case 文本。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoadBalanceConfig::RoundRobin => "round_robin",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

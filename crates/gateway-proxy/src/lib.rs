@@ -3,6 +3,7 @@
 
 use std::net::SocketAddr;
 
+use gateway_admin::AdminService;
 use gateway_filters::FilterRegistry;
 use gateway_router::Router;
 use gateway_types::{
@@ -23,6 +24,8 @@ pub struct ProxyService {
     upstreams: UpstreamRegistry,
     /// 运行时超时、重试和协议限制。
     timeouts: RuntimeSettings,
+    /// 只读管理面，优先拦截内置管理路径。
+    admin: Option<AdminService>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,11 +55,22 @@ impl ProxyService {
         upstreams: UpstreamRegistry,
         timeouts: RuntimeSettings,
     ) -> Self {
+        Self::with_admin(router, filters, upstreams, timeouts, None)
+    }
+
+    pub fn with_admin(
+        router: Router,
+        filters: FilterRegistry,
+        upstreams: UpstreamRegistry,
+        timeouts: RuntimeSettings,
+        admin: Option<AdminService>,
+    ) -> Self {
         Self {
             router,
             filters,
             upstreams,
             timeouts,
+            admin,
         }
     }
 
@@ -109,6 +123,37 @@ impl ProxyService {
         );
         // 客户端地址主要用于日志和补充 X-Forwarded-For。
         request_context.client_addr = Some(client_addr);
+
+        // 内置管理面走只读短路路径，不再进入用户路由和上游转发逻辑。
+        if let Some(admin) = &self.admin {
+            if let Some(admin_response) = admin.maybe_handle(&request_context) {
+                downstream
+                    .write_all(&admin_response.bytes)
+                    .await
+                    .map_err(|err| ProxyConnectionError {
+                        error: GatewayError::Io(format!("write admin response: {}", err)),
+                        request: Some(request_context.clone()),
+                        retries: 0,
+                    })?;
+                downstream
+                    .flush()
+                    .await
+                    .map_err(|err| ProxyConnectionError {
+                        error: GatewayError::Io(format!("flush admin response: {}", err)),
+                        request: Some(request_context.clone()),
+                        retries: 0,
+                    })?;
+
+                let mut response = ResponseContext::new(admin_response.status_code);
+                response.upstream = Some("internal://admin-ui".into());
+
+                return Ok(CompletedRequest {
+                    request: request_context,
+                    response,
+                    retries: 0,
+                });
+            }
+        }
 
         // 路由失败时仍然保留请求上下文，方便 access log 告诉我们“为什么没命中”。
         let route =
@@ -1010,15 +1055,74 @@ fn status_and_reason_for_error(error: &GatewayError) -> (u16, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use gateway_admin::{
+        AdminListener, AdminOverview, AdminOverviewProvider, AdminRoute, AdminRuntime,
+        AdminService, AdminStats, AdminSummary, AdminUpstream,
+    };
     use gateway_config::{
         EndpointConfig, GatewayConfigFile, ListenerConfig, LoadBalanceConfig, ProtocolConfig,
         ProxyPolicyConfig, RouteConfig, RuntimeConfig, UpstreamConfig,
     };
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::{Duration, sleep, timeout};
+
+    struct FakeAdminProvider;
+
+    impl AdminOverviewProvider for FakeAdminProvider {
+        fn overview(&self) -> AdminOverview {
+            AdminOverview {
+                summary: AdminSummary {
+                    listeners: 1,
+                    routes: 1,
+                    upstreams: 1,
+                    worker_threads: 4,
+                },
+                runtime: AdminRuntime {
+                    graceful_shutdown_secs: 30,
+                    downstream_read_timeout_ms: 5000,
+                    upstream_connect_timeout_ms: 3000,
+                    upstream_read_timeout_ms: 5000,
+                    upstream_retry_attempts: 2,
+                    upstream_idle_pool_size: 1,
+                },
+                stats: AdminStats {
+                    total_requests: 0,
+                    completed_requests: 0,
+                    active_connections: 0,
+                    successful_responses: 0,
+                    client_error_responses: 0,
+                    server_error_responses: 0,
+                    upstream_retries: 0,
+                },
+                listeners: vec![AdminListener {
+                    name: "edge".into(),
+                    address: "127.0.0.1:8080".into(),
+                    protocol: "http1".into(),
+                }],
+                routes: vec![AdminRoute {
+                    name: "admin".into(),
+                    listener: "edge".into(),
+                    hosts: vec!["localhost".into()],
+                    path_prefixes: vec!["/__admin".into()],
+                    methods: vec!["GET".into()],
+                    upstream: "internal".into(),
+                }],
+                upstreams: vec![AdminUpstream {
+                    name: "internal".into(),
+                    load_balance: "round_robin".into(),
+                    endpoints: vec!["127.0.0.1:9000".into()],
+                }],
+            }
+        }
+    }
+
+    fn fake_admin_service() -> AdminService {
+        AdminService::new(Arc::new(FakeAdminProvider))
+    }
 
     #[tokio::test]
     async fn proxies_http_request_to_upstream() {
@@ -1113,6 +1217,152 @@ mod tests {
         let text = String::from_utf8(response).expect("utf-8 response");
         assert!(text.starts_with("HTTP/1.1 200 OK"));
         assert!(text.ends_with("hello"));
+    }
+
+    #[tokio::test]
+    async fn serves_admin_ui_before_route_resolution() {
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![],
+            upstreams: vec![UpstreamConfig {
+                name: "unused".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::with_admin(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+            Some(fake_admin_service()),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, _) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection(
+                    "edge",
+                    &mut downstream,
+                    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 40000)),
+                )
+                .await
+                .expect("admin request should succeed")
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /__admin/ HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        let completed = server.await.expect("gateway task");
+        assert_eq!(completed.response.status_code, 200);
+        assert_eq!(
+            completed.response.upstream.as_deref(),
+            Some("internal://admin-ui")
+        );
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+        assert!(text.contains("溪流网关管理面"));
+    }
+
+    #[tokio::test]
+    async fn rejects_remote_admin_request() {
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![],
+            upstreams: vec![UpstreamConfig {
+                name: "unused".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::with_admin(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+            Some(fake_admin_service()),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, _) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection(
+                    "edge",
+                    &mut downstream,
+                    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 9), 41000)),
+                )
+                .await
+                .expect("admin request should return an HTTP response")
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /__admin/ HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        let completed = server.await.expect("gateway task");
+        assert_eq!(completed.response.status_code, 403);
+        assert_eq!(
+            completed.response.upstream.as_deref(),
+            Some("internal://admin-ui")
+        );
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 403 Forbidden"));
+        assert!(text.contains("loopback"));
     }
 
     #[tokio::test]

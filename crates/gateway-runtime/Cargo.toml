@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+gateway-admin = { path = "../gateway-admin" }
 gateway-config = { path = "../gateway-config" }
 gateway-filters = { path = "../gateway-filters" }
 gateway-observability = { path = "../gateway-observability" }

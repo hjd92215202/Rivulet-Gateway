@@ -25,6 +25,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gateway-admin"
+version = "0.1.0"
+dependencies = [
+ "gateway-types",
+]
+
+[[package]]
 name = "gateway-bench"
 version = "0.1.0"
 dependencies = [
@@ -70,6 +77,7 @@ dependencies = [
 name = "gateway-proxy"
 version = "0.1.0"
 dependencies = [
+ "gateway-admin",
  "gateway-config",
  "gateway-filters",
  "gateway-router",
@@ -90,6 +98,7 @@ dependencies = [
 name = "gateway-runtime"
 version = "0.1.0"
 dependencies = [
+ "gateway-admin",
  "gateway-config",
  "gateway-filters",
  "gateway-observability",

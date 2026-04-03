@@ -28,6 +28,7 @@ Engineering standard from today onward:
 Current kernel cut:
 
 - Cargo workspace with focused crates
+- read-only admin UI workspace member with native HTML/CSS/JS assets
 - strongly typed config model
 - route matching core
 - filter chain abstraction
@@ -42,6 +43,7 @@ Current kernel cut:
 Current limits:
 
 - HTTP/1.1 only
+- admin UI is read-only and loopback-only in the first cut (`/__admin/`)
 - one request per connection
 - `Content-Length` request bodies only
 - no chunked request support yet
@@ -61,6 +63,7 @@ CI/CD:
 - release workflow: `.github/workflows/release.yml`
 - nightly benchmark workflow: `.github/workflows/nightly-benchmark.yml`
 - workflow architecture: `docs/WORKFLOW-ARCHITECTURE.md`
+- admin UI design: `docs/ADMIN-UI.md`
 - Linux first-test checklist: `docs/LINUX-SERVER-FIRST-TEST.md`
 - Linux baseline benchmark: `docs/LINUX-BASELINE-BENCHMARK.md`
 - Linux release automation: `docs/LINUX-RELEASE-AUTOMATION.md`
@@ -153,3 +156,11 @@ CI/CD 入口：
 - 里程碑路线图：`docs/MILESTONES.md`
 - 发布流程：`docs/RELEASE-PROCESS.md`
 - 发布检查清单：`docs/RELEASE-CHECKLIST.md`
+
+管理面补充：
+
+- 已新增独立 workspace member：`crates/gateway-admin`
+- 前端仅使用原生 `HTML + CSS + JS`，不引入 Node 构建链
+- 当前仅提供只读管理面，默认访问入口为 `http://127.0.0.1:<port>/__admin/`
+- 第一版仅允许 loopback 访问，避免误暴露到公网
+- 设计说明文档：`docs/ADMIN-UI.md`

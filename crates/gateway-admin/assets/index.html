@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>溪流网关管理面</title>
+    <link rel="stylesheet" href="/__admin/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Rivulet Gateway</p>
+          <h1>溪流网关管理面</h1>
+          <p class="subtitle">
+            只读观测入口，优先服务首轮排障、验收和灰度观察。
+          </p>
+        </div>
+        <button id="refresh-button" class="refresh-button" type="button">刷新</button>
+      </header>
+
+      <section class="card boundary-card">
+        <h2>Workspace 边界</h2>
+        <div class="boundary-grid">
+          <article>
+            <p class="boundary-title">gateway-admin</p>
+            <p class="boundary-text">负责原生 HTML、CSS、JS 资产，以及只读管理接口响应拼装。</p>
+          </article>
+          <article>
+            <p class="boundary-title">gateway-runtime</p>
+            <p class="boundary-text">负责汇总当前配置与运行时指标，并向管理面提供快照数据。</p>
+          </article>
+          <article>
+            <p class="boundary-title">gateway-proxy</p>
+            <p class="boundary-text">
+              负责在 <code>/__admin</code> 命名空间上短路请求，避免进入业务路由和上游转发链。
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <main class="layout">
+        <section class="card summary-card">
+          <h2>运行摘要</h2>
+          <div id="summary-grid" class="summary-grid"></div>
+        </section>
+
+        <section class="card">
+          <h2>运行指标</h2>
+          <div id="stats-grid" class="summary-grid"></div>
+        </section>
+
+        <section class="card">
+          <h2>运行时参数</h2>
+          <div id="runtime-grid" class="summary-grid"></div>
+        </section>
+
+        <section class="card table-card">
+          <h2>Listeners</h2>
+          <div id="listeners-table"></div>
+        </section>
+
+        <section class="card table-card">
+          <h2>Routes</h2>
+          <div id="routes-table"></div>
+        </section>
+
+        <section class="card table-card">
+          <h2>Upstreams</h2>
+          <div id="upstreams-table"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/__admin/app.js"></script>
+  </body>
+</html>
