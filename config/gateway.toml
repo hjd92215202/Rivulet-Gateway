@@ -59,6 +59,14 @@ bearer_tokens = ["dev-gateway-token"]
 query_tokens = ["dev-share-token"]
 query_token_name = "share_token"
 
+[routes.share]
+query_token_name = "share_token"
+
+[[routes.share.grants]]
+token = "dev-share-token"
+share_id = "share-preview-001"
+scope = "preview"
+
 [routes.rate_limit]
 requests = 120
 window_ms = 1000

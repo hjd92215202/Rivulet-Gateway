@@ -410,6 +410,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -475,6 +476,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -538,6 +540,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -609,6 +612,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -674,6 +678,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),

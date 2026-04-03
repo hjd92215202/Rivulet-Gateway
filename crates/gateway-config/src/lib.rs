@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use gateway_types::{
     GatewayError, HttpMethod, Protocol, ProxyPolicyOverrides, Result, RouteAuthPolicy,
-    RouteRateLimitKey, RouteRateLimitPolicy, RuntimeSettings,
+    RouteRateLimitKey, RouteRateLimitPolicy, RouteShareGrant, RouteSharePolicy, RuntimeSettings,
 };
 use serde::Deserialize;
 
@@ -114,6 +114,8 @@ impl GatewayConfigFile {
             validate_route_auth(&route.auth, &format!("route {}", route.name))?;
             // 限流配置需要成组出现，避免只写一半时语义飘忽。
             validate_route_rate_limit(&route.rate_limit, &format!("route {}", route.name))?;
+            // 分享访问隔离配置要保证 token 和分享身份映射关系清晰稳定。
+            validate_route_share(&route.share, &format!("route {}", route.name))?;
         }
 
         Ok(())
@@ -292,6 +294,9 @@ pub struct RouteConfig {
     /// 路由级限流入口；默认关闭，主要用于公开页面保护。
     #[serde(default)]
     pub rate_limit: RouteRateLimitConfig,
+    /// 路由级分享访问隔离；默认关闭，开启后会向上游注入稳定分享元数据。
+    #[serde(default)]
+    pub share: RouteShareConfig,
 }
 
 /// 第一版鉴权策略只提供最小可用配置面：
@@ -360,6 +365,63 @@ impl RouteRateLimitConfig {
             requests: self.requests,
             window: self.window_ms.map(Duration::from_millis),
             key: self.key.into(),
+        }
+    }
+}
+
+/// 第一版分享访问隔离先保持最小可用配置面：
+/// query token 命中某个 grant 后，网关把稳定的分享身份和作用域注入给上游。
+#[derive(Clone, Debug, Deserialize)]
+pub struct RouteShareConfig {
+    /// 分享 token 在 query string 中使用的参数名。
+    #[serde(default = "default_share_query_token_name")]
+    pub query_token_name: String,
+    /// 当前路由允许的分享访问授权集合。
+    #[serde(default)]
+    pub grants: Vec<RouteShareGrantConfig>,
+}
+
+impl Default for RouteShareConfig {
+    fn default() -> Self {
+        Self {
+            query_token_name: default_share_query_token_name(),
+            grants: Vec::new(),
+        }
+    }
+}
+
+impl RouteShareConfig {
+    /// 把配置层的分享授权定义转换成运行时策略。
+    pub fn to_policy(&self) -> RouteSharePolicy {
+        RouteSharePolicy {
+            query_token_name: self.query_token_name.clone(),
+            grants: self
+                .grants
+                .iter()
+                .map(RouteShareGrantConfig::to_grant)
+                .collect(),
+        }
+    }
+}
+
+/// 单条分享授权把“入口 token”映射为“上游可识别的稳定分享身份”。
+#[derive(Clone, Debug, Deserialize)]
+pub struct RouteShareGrantConfig {
+    /// 分享链接携带的 token。
+    pub token: String,
+    /// 注入给上游的稳定分享标识。
+    pub share_id: String,
+    /// 注入给上游的分享作用域。
+    pub scope: String,
+}
+
+impl RouteShareGrantConfig {
+    /// 把配置对象转成运行时共享的数据结构。
+    fn to_grant(&self) -> RouteShareGrant {
+        RouteShareGrant {
+            token: self.token.clone(),
+            share_id: self.share_id.clone(),
+            scope: self.scope.clone(),
         }
     }
 }
@@ -604,6 +666,39 @@ fn validate_route_rate_limit(rate_limit: &RouteRateLimitConfig, scope: &str) -> 
     }
 }
 
+fn validate_route_share(share: &RouteShareConfig, scope: &str) -> Result<()> {
+    if share.query_token_name.trim().is_empty() {
+        return Err(GatewayError::InvalidConfig(format!(
+            "{} share query_token_name must not be empty",
+            scope
+        )));
+    }
+
+    for (index, grant) in share.grants.iter().enumerate() {
+        let grant_scope = format!("{} share grant {}", scope, index);
+        if grant.token.trim().is_empty() {
+            return Err(GatewayError::InvalidConfig(format!(
+                "{} token must not be empty",
+                grant_scope
+            )));
+        }
+        if grant.share_id.trim().is_empty() {
+            return Err(GatewayError::InvalidConfig(format!(
+                "{} share_id must not be empty",
+                grant_scope
+            )));
+        }
+        if grant.scope.trim().is_empty() {
+            return Err(GatewayError::InvalidConfig(format!(
+                "{} scope must not be empty",
+                grant_scope
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn default_weight() -> u16 {
     1
 }
@@ -684,6 +779,10 @@ fn default_auth_query_token_name() -> String {
     "access_token".into()
 }
 
+fn default_share_query_token_name() -> String {
+    "share_token".into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,6 +807,7 @@ mod tests {
                 policy: ProxyPolicyConfig::default(),
                 auth: RouteAuthConfig::default(),
                 rate_limit: RouteRateLimitConfig::default(),
+                share: RouteShareConfig::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -785,6 +885,22 @@ mod tests {
         let error = config.validate().expect_err("config should be invalid");
         match error {
             GatewayError::InvalidConfig(message) => assert!(message.contains("set together")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_empty_share_grant_scope() {
+        let mut config = valid_config();
+        config.routes[0].share.grants = vec![RouteShareGrantConfig {
+            token: "share-secret".into(),
+            share_id: "share-001".into(),
+            scope: "".into(),
+        }];
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("scope")),
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -871,6 +987,8 @@ upstream = "api"
         assert_eq!(loaded.routes[0].auth.query_token_name, "access_token");
         assert!(loaded.routes[0].auth.bearer_tokens.is_empty());
         assert!(loaded.routes[0].rate_limit.requests.is_none());
+        assert_eq!(loaded.routes[0].share.query_token_name, "share_token");
+        assert!(loaded.routes[0].share.grants.is_empty());
     }
 
     #[test]
@@ -1025,5 +1143,57 @@ key = "client_ip"
             loaded.routes[0].rate_limit.key,
             RateLimitKeyConfig::ClientIp
         );
+    }
+
+    #[test]
+    fn load_from_file_reads_route_share_policy() {
+        let file_name = format!(
+            "gateway-config-share-test-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+
+        fs::write(
+            &path,
+            r#"
+[[listeners]]
+name = "edge"
+address = "127.0.0.1:8080"
+protocol = "http1"
+
+[[upstreams]]
+name = "api"
+load_balance = "round_robin"
+
+[[upstreams.endpoints]]
+address = "127.0.0.1:9000"
+
+[[routes]]
+name = "shared"
+listener = "edge"
+upstream = "api"
+
+[routes.share]
+query_token_name = "share_key"
+
+[[routes.share.grants]]
+token = "share-secret"
+share_id = "share-001"
+scope = "preview"
+"#,
+        )
+        .expect("write config file");
+
+        let loaded = GatewayConfigFile::load_from_file(&path).expect("config should load");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(loaded.routes[0].share.query_token_name, "share_key");
+        assert_eq!(loaded.routes[0].share.grants.len(), 1);
+        assert_eq!(loaded.routes[0].share.grants[0].token, "share-secret");
+        assert_eq!(loaded.routes[0].share.grants[0].share_id, "share-001");
+        assert_eq!(loaded.routes[0].share.grants[0].scope, "preview");
     }
 }

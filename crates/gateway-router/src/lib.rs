@@ -34,6 +34,7 @@ impl Router {
             proxy_policy: route.policy.to_overrides(),
             auth_policy: route.auth.to_policy(),
             rate_limit_policy: route.rate_limit.to_policy(),
+            share_policy: route.share.to_policy(),
         })
     }
 }
@@ -99,6 +100,7 @@ mod tests {
                     policy: Default::default(),
                     auth: Default::default(),
                     rate_limit: Default::default(),
+                    share: Default::default(),
                 },
                 RouteConfig {
                     name: "api".into(),
@@ -115,6 +117,7 @@ mod tests {
                     },
                     auth: Default::default(),
                     rate_limit: Default::default(),
+                    share: Default::default(),
                 },
             ],
             upstreams: vec![UpstreamConfig {
@@ -143,6 +146,7 @@ mod tests {
         assert_eq!(matched.proxy_policy.upstream_retry_attempts, Some(3));
         assert!(!matched.auth_policy.is_enabled());
         assert!(!matched.rate_limit_policy.is_enabled());
+        assert!(!matched.share_policy.is_enabled());
     }
 
     #[test]

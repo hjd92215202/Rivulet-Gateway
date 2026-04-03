@@ -286,6 +286,7 @@ fn spawn_gateway(
             policy: Default::default(),
             auth: Default::default(),
             rate_limit: Default::default(),
+            share: Default::default(),
         }],
         upstreams: vec![UpstreamConfig {
             name: "bench-upstream".into(),

@@ -118,6 +118,12 @@ pub struct RequestContext {
     pub client_addr: Option<SocketAddr>,
     /// 请求唯一标识，便于日志和链路定位。
     pub request_id: Option<String>,
+    /// 需要由网关注入到上游的附加请求头。
+    pub upstream_headers: Vec<(String, String)>,
+    /// 当前请求如果命中了分享访问策略，这里会记录对应的 share id。
+    pub share_id: Option<String>,
+    /// 当前请求如果命中了分享访问策略，这里会记录对应的 share scope。
+    pub share_scope: Option<String>,
 }
 
 impl RequestContext {
@@ -146,6 +152,11 @@ impl RequestContext {
             client_addr: None,
             // request id 由过滤器补齐，不在构造函数里强行生成。
             request_id: None,
+            // 默认没有附加上游头。
+            upstream_headers: Vec::new(),
+            // 默认没有分享访问上下文。
+            share_id: None,
+            share_scope: None,
         }
     }
 
@@ -184,6 +195,20 @@ impl RequestContext {
         }
         None
     }
+
+    /// 记录分享访问上下文，并准备好要注入给上游的稳定请求头。
+    pub fn set_share_access(&mut self, share_id: &str, share_scope: &str) {
+        self.share_id = Some(share_id.to_string());
+        self.share_scope = Some(share_scope.to_string());
+        self.upstream_headers.retain(|(name, _)| {
+            !name.eq_ignore_ascii_case("x-rivulet-share-id")
+                && !name.eq_ignore_ascii_case("x-rivulet-share-scope")
+        });
+        self.upstream_headers
+            .push(("X-Rivulet-Share-Id".into(), share_id.to_string()));
+        self.upstream_headers
+            .push(("X-Rivulet-Share-Scope".into(), share_scope.to_string()));
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -220,6 +245,8 @@ pub struct RouteMatch {
     pub auth_policy: RouteAuthPolicy,
     /// 路由命中后的限流策略。
     pub rate_limit_policy: RouteRateLimitPolicy,
+    /// 路由命中后的分享访问隔离策略。
+    pub share_policy: RouteSharePolicy,
 }
 
 /// 路由级鉴权策略先保持最小可用集：
@@ -319,6 +346,71 @@ impl RouteRateLimitPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RouteRateLimitKey {
     ClientIp,
+}
+
+/// 第一版分享访问隔离策略：
+/// 先用 query token 命中分享授权，再把明确的 share 元数据传给上游。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteSharePolicy {
+    /// 分享 token 的 query 参数名。
+    pub query_token_name: String,
+    /// 当前路由允许的分享授权集合。
+    pub grants: Vec<RouteShareGrant>,
+}
+
+impl Default for RouteSharePolicy {
+    fn default() -> Self {
+        Self {
+            query_token_name: "share_token".into(),
+            grants: Vec::new(),
+        }
+    }
+}
+
+impl RouteSharePolicy {
+    /// 只有显式配置了 grants，这条路由才真正启用分享访问隔离。
+    pub fn is_enabled(&self) -> bool {
+        !self.grants.is_empty()
+    }
+
+    /// 根据 query token 匹配分享授权。
+    /// 第一版故意只做显式 token 命中，不做模糊兜底。
+    pub fn authorize(&self, request: &mut RequestContext) -> Result<()> {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+
+        let token = request.query_value(&self.query_token_name).ok_or_else(|| {
+            GatewayError::Unauthorized(format!(
+                "route requires {} query token for shared access",
+                self.query_token_name
+            ))
+        })?;
+
+        let grant = self
+            .grants
+            .iter()
+            .find(|item| item.token == token)
+            .ok_or_else(|| {
+                GatewayError::Unauthorized(format!(
+                    "route requires a valid {} query token for shared access",
+                    self.query_token_name
+                ))
+            })?;
+
+        request.set_share_access(&grant.share_id, &grant.scope);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteShareGrant {
+    /// 分享 token 本身。
+    pub token: String,
+    /// 这次分享访问在上游侧看到的稳定 share id。
+    pub share_id: String,
+    /// 分享访问的语义作用域，例如 read / preview。
+    pub scope: String,
 }
 
 /// 上游节点描述只保留“如何连过去”所需的最小字段。
@@ -527,6 +619,7 @@ mod tests {
         assert_eq!(request.bearer_token(), Some("secret-token"));
         assert_eq!(request.query_value("token"), Some("abc123"));
         assert_eq!(request.query_value("missing"), None);
+        assert!(request.upstream_headers.is_empty());
     }
 
     #[test]
@@ -581,5 +674,35 @@ mod tests {
 
         assert!(policy.is_enabled());
         assert_eq!(policy.key_for(&request), "127.0.0.1");
+    }
+
+    #[test]
+    fn route_share_policy_sets_share_headers_on_match() {
+        let mut request =
+            RequestContext::new("edge", "example.test", "/share/view", HttpMethod::Get);
+        request.query = Some("share_token=share-secret".into());
+
+        let policy = RouteSharePolicy {
+            query_token_name: "share_token".into(),
+            grants: vec![RouteShareGrant {
+                token: "share-secret".into(),
+                share_id: "share-001".into(),
+                scope: "read".into(),
+            }],
+        };
+
+        policy
+            .authorize(&mut request)
+            .expect("share should authorize");
+
+        assert_eq!(request.share_id.as_deref(), Some("share-001"));
+        assert_eq!(request.share_scope.as_deref(), Some("read"));
+        assert_eq!(
+            request.upstream_headers,
+            vec![
+                ("X-Rivulet-Share-Id".into(), "share-001".into()),
+                ("X-Rivulet-Share-Scope".into(), "read".into()),
+            ]
+        );
     }
 }

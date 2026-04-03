@@ -164,6 +164,9 @@ impl ProxyService {
         route.auth_policy.authorize(&request)?;
         self.rate_limiter
             .check(&route.route_name, &route.rate_limit_policy, &request)?;
+        // 分享访问隔离在入口放行后立即落到请求上下文里，
+        // 这样后面的日志、转发和上游识别都能看到稳定 share 元数据。
+        route.share_policy.authorize(&mut request)?;
 
         // 纯内存入口只验证选路是否正确，不做真实网络转发。
         let selected = self
@@ -274,6 +277,14 @@ impl ProxyService {
                 &route.rate_limit_policy,
                 &request_context,
             )
+            .map_err(|error| ProxyConnectionError {
+                error,
+                request: Some(request_context.clone()),
+                retries: 0,
+            })?;
+        route
+            .share_policy
+            .authorize(&mut request_context)
             .map_err(|error| ProxyConnectionError {
                 error,
                 request: Some(request_context.clone()),
@@ -949,6 +960,11 @@ impl HttpRequest {
             if is_hop_by_hop_header(name) {
                 continue;
             }
+            // 这类头只能由网关根据已认证/已隔离的内部上下文注入，
+            // 不能信任客户端原样透传，避免伪造分享身份。
+            if is_gateway_managed_upstream_header(name) {
+                continue;
+            }
             if name.eq_ignore_ascii_case("host") {
                 has_host = true;
             }
@@ -958,6 +974,12 @@ impl HttpRequest {
             if name.eq_ignore_ascii_case("content-length") {
                 has_content_length = true;
             }
+            request_bytes.extend_from_slice(format!("{}: {}\r\n", name, value).as_bytes());
+        }
+
+        // 把网关内部策略生成的附加头放在这里统一写入，
+        // 保证上游拿到的是“经过入口策略裁决后的稳定语义”。
+        for (name, value) in &request_context.upstream_headers {
             request_bytes.extend_from_slice(format!("{}: {}\r\n", name, value).as_bytes());
         }
 
@@ -1142,6 +1164,11 @@ fn is_hop_by_hop_header(name: &str) -> bool {
         || name.eq_ignore_ascii_case("upgrade")
 }
 
+fn is_gateway_managed_upstream_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("x-rivulet-share-id")
+        || name.eq_ignore_ascii_case("x-rivulet-share-scope")
+}
+
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
@@ -1199,7 +1226,8 @@ mod tests {
     };
     use gateway_config::{
         EndpointConfig, GatewayConfigFile, ListenerConfig, LoadBalanceConfig, ProtocolConfig,
-        ProxyPolicyConfig, RouteAuthConfig, RouteConfig, RuntimeConfig, UpstreamConfig,
+        ProxyPolicyConfig, RouteAuthConfig, RouteConfig, RouteShareConfig, RouteShareGrantConfig,
+        RuntimeConfig, UpstreamConfig,
     };
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::{Duration, sleep, timeout};
@@ -1299,6 +1327,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1379,6 +1408,7 @@ mod tests {
                     query_token_name: "access_token".into(),
                 },
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1453,6 +1483,24 @@ mod tests {
                 .await
                 .expect("read backend request");
             assert_eq!(request.path_for_route(), "/share/view");
+            let raw = String::from_utf8_lossy(&request.body);
+            assert!(raw.is_empty());
+            assert_eq!(
+                request
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("x-rivulet-share-id"))
+                    .map(|(_, value)| value.as_str()),
+                Some("share-001")
+            );
+            assert_eq!(
+                request
+                    .headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("x-rivulet-share-scope"))
+                    .map(|(_, value)| value.as_str()),
+                Some("preview")
+            );
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
                 .await
@@ -1475,12 +1523,16 @@ mod tests {
                 upstream: "api".into(),
                 filters: vec!["request-id".into()],
                 policy: Default::default(),
-                auth: RouteAuthConfig {
-                    bearer_tokens: Vec::new(),
-                    query_tokens: vec!["share-secret".into()],
-                    query_token_name: "share_token".into(),
-                },
+                auth: Default::default(),
                 rate_limit: Default::default(),
+                share: RouteShareConfig {
+                    query_token_name: "share_token".into(),
+                    grants: vec![RouteShareGrantConfig {
+                        token: "share-secret".into(),
+                        share_id: "share-001".into(),
+                        scope: "preview".into(),
+                    }],
+                },
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1529,6 +1581,97 @@ mod tests {
             outcome.request.request_id.as_deref(),
             Some("edge:example.test:/share/view")
         );
+        assert_eq!(outcome.request.share_id.as_deref(), Some("share-001"));
+        assert_eq!(outcome.request.share_scope.as_deref(), Some("preview"));
+    }
+
+    #[tokio::test]
+    async fn rejects_request_without_valid_query_share_token() {
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "share".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/share/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec!["request-id".into()],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: RouteShareConfig {
+                    query_token_name: "share_token".into(),
+                    grants: vec![RouteShareGrantConfig {
+                        token: "share-secret".into(),
+                        share_id: "share-001".into(),
+                        scope: "preview".into(),
+                    }],
+                },
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /share/view HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task");
+        match outcome {
+            Err(ProxyConnectionError {
+                error: GatewayError::Unauthorized(message),
+                request: Some(request),
+                retries,
+            }) => {
+                assert!(message.contains("share_token"));
+                assert_eq!(
+                    request.request_id.as_deref(),
+                    Some("edge:example.test:/share/view")
+                );
+                assert_eq!(request.share_id, None);
+                assert_eq!(retries, 0);
+            }
+            other => panic!("expected shared access rejection, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -1574,6 +1717,7 @@ mod tests {
                     window_ms: Some(1_000),
                     key: gateway_config::RateLimitKeyConfig::ClientIp,
                 },
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1667,6 +1811,7 @@ mod tests {
                     window_ms: Some(30),
                     key: gateway_config::RateLimitKeyConfig::ClientIp,
                 },
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -1908,6 +2053,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2023,6 +2169,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2172,6 +2319,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2260,6 +2408,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2356,6 +2505,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2449,6 +2599,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2603,6 +2754,7 @@ mod tests {
                 policy: Default::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2709,6 +2861,7 @@ mod tests {
                 policy: ProxyPolicyConfig::default(),
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2807,6 +2960,7 @@ mod tests {
                 },
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
@@ -2915,6 +3069,7 @@ mod tests {
                 },
                 auth: Default::default(),
                 rate_limit: Default::default(),
+                share: Default::default(),
             }],
             upstreams: vec![UpstreamConfig {
                 name: "api".into(),
