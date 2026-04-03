@@ -121,6 +121,9 @@ impl ProxyService {
             request.path_for_route(),
             request.method,
         );
+        // 把下游请求头和 query 快照带进统一上下文，给鉴权、限流、分享隔离类策略复用。
+        request_context.query = request.query_for_policy();
+        request_context.headers = request.headers.clone();
         // 客户端地址主要用于日志和补充 X-Forwarded-For。
         request_context.client_addr = Some(client_addr);
 
@@ -810,6 +813,13 @@ impl HttpRequest {
             .next()
             .unwrap_or(self.target.as_str())
             .to_string()
+    }
+
+    fn query_for_policy(&self) -> Option<String> {
+        self.target
+            .split_once('?')
+            .map(|(_, query)| query.to_string())
+            .filter(|query| !query.is_empty())
     }
 
     async fn write_to_upstream(
@@ -2549,6 +2559,38 @@ mod tests {
             }
             other => panic!("expected origin-form error, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn request_parser_keeps_path_and_query_separate() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"GET /share/view?token=abc123&scope=read HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let request = server
+            .await
+            .expect("server task")
+            .expect("request should parse");
+
+        assert_eq!(request.path_for_route(), "/share/view");
+        assert_eq!(
+            request.query_for_policy().as_deref(),
+            Some("token=abc123&scope=read")
+        );
     }
 
     #[tokio::test]

@@ -102,8 +102,12 @@ pub struct RequestContext {
     pub host: String,
     /// 用于路径匹配的请求路径。
     pub path: String,
+    /// 原始 query string 去掉前导 `?` 后的部分，给鉴权、分享令牌和灰度参数使用。
+    pub query: Option<String>,
     /// 归一化后的 HTTP 方法。
     pub method: HttpMethod,
+    /// 下游请求头快照，供鉴权、限流和分享隔离类策略读取。
+    pub headers: Vec<(String, String)>,
     /// 客户端地址主要用于补充 `X-Forwarded-For`。
     pub client_addr: Option<SocketAddr>,
     /// 请求唯一标识，便于日志和链路定位。
@@ -126,13 +130,53 @@ impl RequestContext {
             host: host.into(),
             // path 只保留路由匹配所需的路径部分，不把 query string 混进来。
             path: path.into(),
+            // query 先由真实网络入口补充；纯内存调用默认没有 query。
+            query: None,
             // method 是进入路由和代理的主分类条件之一。
             method,
+            // 纯内存调用默认不带请求头。
+            headers: Vec::new(),
             // 第一阶段只有真实网络入口会填这个值；纯内存调用时可以为空。
             client_addr: None,
             // request id 由过滤器补齐，不在构造函数里强行生成。
             request_id: None,
         }
+    }
+
+    /// 从快照里读取指定 header 的第一个值。
+    /// 当前先保持“按出现顺序取首个”的保守语义，避免在不同策略里出现隐式不一致。
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(item, _)| item.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// 解析最常见的 `Authorization: Bearer <token>` 形式。
+    pub fn bearer_token(&self) -> Option<&str> {
+        let authorization = self.header("authorization")?;
+        let (scheme, token) = authorization.split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("bearer") {
+            return None;
+        }
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        Some(token)
+    }
+
+    /// 从 query string 中按 `key=value` 形式提取首个值。
+    /// 第一版先不做 URL decode，只提供稳定、可预期的最小解析能力。
+    pub fn query_value(&self, key: &str) -> Option<&str> {
+        let query = self.query.as_deref()?;
+        for pair in query.split('&') {
+            let (item_key, item_value) = pair.split_once('=')?;
+            if item_key == key {
+                return Some(item_value);
+            }
+        }
+        None
     }
 }
 
@@ -358,5 +402,21 @@ mod tests {
         assert_eq!(resolved.upstream_connect_timeout, Duration::from_secs(1));
         assert_eq!(resolved.upstream_read_timeout, Duration::from_secs(4));
         assert_eq!(resolved.upstream_retry_attempts, 1);
+    }
+
+    #[test]
+    fn request_context_can_read_headers_bearer_and_query() {
+        let mut request =
+            RequestContext::new("edge", "example.test", "/share/view", HttpMethod::Get);
+        request.query = Some("token=abc123&scope=read".into());
+        request.headers = vec![
+            ("Authorization".into(), "Bearer secret-token".into()),
+            ("X-Share-Id".into(), "share-001".into()),
+        ];
+
+        assert_eq!(request.header("x-share-id"), Some("share-001"));
+        assert_eq!(request.bearer_token(), Some("secret-token"));
+        assert_eq!(request.query_value("token"), Some("abc123"));
+        assert_eq!(request.query_value("missing"), None);
     }
 }
