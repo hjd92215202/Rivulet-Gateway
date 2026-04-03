@@ -48,6 +48,7 @@ bash ./scripts/linux-service-remove.sh --mode auto
 - Tarball install is the most portable path across Debian-family and RPM-family hosts.
 - RPM install is intended for native rpm-based hosts and uses `rpm -Uvh`.
 - These scripts are designed for cautious operator workflows and do not claim full cluster-wide orchestration semantics.
+- For clean-host install validation, prefer `scripts/linux-postinstall-validate.sh` so installation and service checks stay in one automated chain.
 
 ## 中文
 

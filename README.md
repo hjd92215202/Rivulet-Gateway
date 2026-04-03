@@ -68,6 +68,7 @@ CI/CD:
 - Linux first-test checklist: `docs/LINUX-SERVER-FIRST-TEST.md`
 - Linux baseline benchmark: `docs/LINUX-BASELINE-BENCHMARK.md`
 - Linux release automation: `docs/LINUX-RELEASE-AUTOMATION.md`
+- Linux post-install validation: `docs/LINUX-POSTINSTALL-VALIDATION.md`
 - Linux systemd validation: `docs/LINUX-SYSTEMD-VALIDATION.md`
 - Linux upgrade rollback validation: `docs/LINUX-UPGRADE-ROLLBACK-VALIDATION.md`
 - Linux service operations: `docs/LINUX-SERVICE-OPERATIONS.md`
@@ -81,6 +82,7 @@ Project policy docs:
 - code of conduct: `CODE_OF_CONDUCT.md`
 - production readiness report: `docs/PRODUCTION-READINESS.md`
 - milestone roadmap: `docs/MILESTONES.md`
+- capability readiness: `docs/CAPABILITY-READINESS.md`
 - release process: `docs/RELEASE-PROCESS.md`
 - release checklist: `docs/RELEASE-CHECKLIST.md`
 

@@ -42,6 +42,7 @@ Minimum local checks before pushing a release tag:
 
 Recommended Linux host checks before stronger production claims:
 
+- `bash ./scripts/linux-postinstall-validate.sh --tag <version> --host <host:port>`
 - `bash ./scripts/linux-systemd-validate.sh --tag <version> --host <host:port>`
 - `bash ./scripts/linux-upgrade-rollback-validate.sh --from-tag <previous> --to-tag <version> --host <host:port>`
 

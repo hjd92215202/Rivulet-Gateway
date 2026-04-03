@@ -27,11 +27,15 @@ Current validation layers:
    File: `packaging/tests/verify-checksums.sh`
    Verifies published artifacts against `SHA256SUMS`.
 
-5. Real-host systemd lifecycle validation
+5. Real-host install-path validation
+   File: `scripts/linux-postinstall-validate.sh`
+   Installs the packaged service onto a clean Linux validation host, starts the real service, verifies healthy-path and degraded-path behavior, and can auto-clean the install afterward.
+
+6. Temporary-unit systemd lifecycle validation
    File: `scripts/linux-systemd-validate.sh`
    Uses a temporary validation unit on a Linux host to verify start, restart, stop, and degraded-path behavior.
 
-6. Host-side upgrade and rollback validation
+7. Host-side upgrade and rollback validation
    File: `scripts/linux-upgrade-rollback-validate.sh`
    Verifies that a temporary validation deployment can start, upgrade, roll back, and recover service health.
 
@@ -48,6 +52,7 @@ Validation expectations:
 - packaged binary starts successfully
 - route miss returns `404`
 - upstream miss returns `502`
+- clean-host install path can start the real `rivulet-gateway.service`
 
 Example commands:
 

@@ -44,6 +44,7 @@ Release target: `v<version>`
 
 ### Recommended Linux Host Validation
 
+- [ ] `bash ./scripts/linux-postinstall-validate.sh --tag <version> --host <host:port>`
 - [ ] `bash ./scripts/linux-systemd-validate.sh --tag <version> --host <host:port>`
 - [ ] `bash ./scripts/linux-upgrade-rollback-validate.sh --from-tag <previous> --to-tag <version> --host <host:port>`
 
