@@ -6,10 +6,10 @@ This checklist is the shortest safe path for validating `Rivulet Gateway` on a L
 
 Current release note:
 
-- current release tag: `v0.1.5`
-- current package filename version: `0.1.0`
+- use the current GitHub Release tag, for example `v0.1.6`
+- package filenames should match the same release version
 
-This means the release page is tagged as `v0.1.5`, while the package files are still named `rivulet-gateway-0.1.0-*`.
+If the release tag version and asset filename version ever diverge, treat that as a release issue and stop the server test until the assets are corrected.
 
 ### 0. Common Precheck
 
@@ -55,17 +55,17 @@ cd ~/rivulet-first-test
 Download assets:
 
 ```bash
-curl -L -o rivulet-gateway-0.1.0-linux-x86_64.tar.gz \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/rivulet-gateway-0.1.0-linux-x86_64.tar.gz
+curl -L -o rivulet-gateway-<version>-linux-x86_64.tar.gz \
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/rivulet-gateway-<version>-linux-x86_64.tar.gz
 
 curl -L -o SHA256SUMS.txt \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/SHA256SUMS.txt
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/SHA256SUMS.txt
 ```
 
 Verify checksum:
 
 ```bash
-grep 'rivulet-gateway-0.1.0-linux-x86_64.tar.gz' SHA256SUMS.txt | sha256sum -c -
+grep 'rivulet-gateway-<version>-linux-x86_64.tar.gz' SHA256SUMS.txt | sha256sum -c -
 ```
 
 Start a local backend:
@@ -82,8 +82,8 @@ Open a second terminal and start the gateway:
 cd ~/rivulet-first-test
 rm -rf ./x86_64-test
 mkdir -p ./x86_64-test
-tar -xzf rivulet-gateway-0.1.0-linux-x86_64.tar.gz -C ./x86_64-test
-cd ./x86_64-test/rivulet-gateway-0.1.0
+tar -xzf rivulet-gateway-<version>-linux-x86_64.tar.gz -C ./x86_64-test
+cd ./x86_64-test/rivulet-gateway-<version>
 ./usr/bin/gateway ./etc/gateway/gateway.toml
 ```
 
@@ -106,17 +106,17 @@ Expected result:
 Download assets:
 
 ```bash
-curl -L -o rivulet-gateway-0.1.0-linux-arm64.tar.gz \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/rivulet-gateway-0.1.0-linux-arm64.tar.gz
+curl -L -o rivulet-gateway-<version>-linux-arm64.tar.gz \
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/rivulet-gateway-<version>-linux-arm64.tar.gz
 
 curl -L -o SHA256SUMS.txt \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/SHA256SUMS.txt
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/SHA256SUMS.txt
 ```
 
 Verify checksum:
 
 ```bash
-grep 'rivulet-gateway-0.1.0-linux-arm64.tar.gz' SHA256SUMS.txt | sha256sum -c -
+grep 'rivulet-gateway-<version>-linux-arm64.tar.gz' SHA256SUMS.txt | sha256sum -c -
 ```
 
 Start a local backend:
@@ -133,8 +133,8 @@ Open a second terminal and start the gateway:
 cd ~/rivulet-first-test
 rm -rf ./arm64-test
 mkdir -p ./arm64-test
-tar -xzf rivulet-gateway-0.1.0-linux-arm64.tar.gz -C ./arm64-test
-cd ./arm64-test/rivulet-gateway-0.1.0
+tar -xzf rivulet-gateway-<version>-linux-arm64.tar.gz -C ./arm64-test
+cd ./arm64-test/rivulet-gateway-<version>
 ./usr/bin/gateway ./etc/gateway/gateway.toml
 ```
 
@@ -153,26 +153,26 @@ Expected result is the same as x86_64.
 x86_64 RPM:
 
 ```bash
-curl -L -o rivulet-gateway-0.1.0-1.x86_64.rpm \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/rivulet-gateway-0.1.0-1.x86_64.rpm
+curl -L -o rivulet-gateway-<version>-1.x86_64.rpm \
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/rivulet-gateway-<version>-1.x86_64.rpm
 
-grep 'rivulet-gateway-0.1.0-1.x86_64.rpm' SHA256SUMS.txt | sha256sum -c -
+grep 'rivulet-gateway-<version>-1.x86_64.rpm' SHA256SUMS.txt | sha256sum -c -
 ```
 
 arm64 RPM:
 
 ```bash
-curl -L -o rivulet-gateway-0.1.0-1.aarch64.rpm \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/rivulet-gateway-0.1.0-1.aarch64.rpm
+curl -L -o rivulet-gateway-<version>-1.aarch64.rpm \
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/rivulet-gateway-<version>-1.aarch64.rpm
 
-grep 'rivulet-gateway-0.1.0-1.aarch64.rpm' SHA256SUMS.txt | sha256sum -c -
+grep 'rivulet-gateway-<version>-1.aarch64.rpm' SHA256SUMS.txt | sha256sum -c -
 ```
 
 If you cloned the repository onto the server, you can use the built-in validation suite:
 
 ```bash
-bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-0.1.0-1.x86_64.rpm
-bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-0.1.0-1.aarch64.rpm
+bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-<version>-1.x86_64.rpm
+bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-<version>-1.aarch64.rpm
 ```
 
 ### 4. Optional systemd Smoke
@@ -180,7 +180,7 @@ bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-0.1.0-1.
 Repository-owned automated path:
 
 ```bash
-bash ./scripts/linux-service-install.sh --tag v0.1.6 --format tar.gz
+bash ./scripts/linux-service-install.sh --tag v<version> --format tar.gz
 ```
 
 Then inspect service state:
@@ -222,10 +222,10 @@ bash ./scripts/linux-service-remove.sh --mode auto
 
 当前发布说明：
 
-- 当前 release tag：`v0.1.5`
-- 当前包文件名版本：`0.1.0`
+- 使用当前 GitHub Release tag，例如 `v0.1.6`
+- 包文件名应当与同一 release 版本保持一致
 
-也就是说，GitHub Release 页面上的标签是 `v0.1.5`，但下载文件名目前仍然是 `rivulet-gateway-0.1.0-*`。
+如果 release tag 版本与资产文件名版本发生偏差，应当先视为发布问题并停止服务器首测，先修正发布资产再继续。
 
 ### 0. 通用前置检查
 
@@ -273,17 +273,17 @@ cd ~/rivulet-first-test
 下载发布资产：
 
 ```bash
-curl -L -o rivulet-gateway-0.1.0-linux-x86_64.tar.gz \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/rivulet-gateway-0.1.0-linux-x86_64.tar.gz
+curl -L -o rivulet-gateway-<version>-linux-x86_64.tar.gz \
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/rivulet-gateway-<version>-linux-x86_64.tar.gz
 
 curl -L -o SHA256SUMS.txt \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/SHA256SUMS.txt
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/SHA256SUMS.txt
 ```
 
 校验 checksum：
 
 ```bash
-grep 'rivulet-gateway-0.1.0-linux-x86_64.tar.gz' SHA256SUMS.txt | sha256sum -c -
+grep 'rivulet-gateway-<version>-linux-x86_64.tar.gz' SHA256SUMS.txt | sha256sum -c -
 ```
 
 启动本地后端：
@@ -300,8 +300,8 @@ python3 -m http.server 9000 --bind 127.0.0.1
 cd ~/rivulet-first-test
 rm -rf ./x86_64-test
 mkdir -p ./x86_64-test
-tar -xzf rivulet-gateway-0.1.0-linux-x86_64.tar.gz -C ./x86_64-test
-cd ./x86_64-test/rivulet-gateway-0.1.0
+tar -xzf rivulet-gateway-<version>-linux-x86_64.tar.gz -C ./x86_64-test
+cd ./x86_64-test/rivulet-gateway-<version>
 ./usr/bin/gateway ./etc/gateway/gateway.toml
 ```
 
@@ -324,17 +324,17 @@ ss -lntp | grep 8080
 下载发布资产：
 
 ```bash
-curl -L -o rivulet-gateway-0.1.0-linux-arm64.tar.gz \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/rivulet-gateway-0.1.0-linux-arm64.tar.gz
+curl -L -o rivulet-gateway-<version>-linux-arm64.tar.gz \
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/rivulet-gateway-<version>-linux-arm64.tar.gz
 
 curl -L -o SHA256SUMS.txt \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/SHA256SUMS.txt
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/SHA256SUMS.txt
 ```
 
 校验 checksum：
 
 ```bash
-grep 'rivulet-gateway-0.1.0-linux-arm64.tar.gz' SHA256SUMS.txt | sha256sum -c -
+grep 'rivulet-gateway-<version>-linux-arm64.tar.gz' SHA256SUMS.txt | sha256sum -c -
 ```
 
 启动本地后端：
@@ -351,8 +351,8 @@ python3 -m http.server 9000 --bind 127.0.0.1
 cd ~/rivulet-first-test
 rm -rf ./arm64-test
 mkdir -p ./arm64-test
-tar -xzf rivulet-gateway-0.1.0-linux-arm64.tar.gz -C ./arm64-test
-cd ./arm64-test/rivulet-gateway-0.1.0
+tar -xzf rivulet-gateway-<version>-linux-arm64.tar.gz -C ./arm64-test
+cd ./arm64-test/rivulet-gateway-<version>
 ./usr/bin/gateway ./etc/gateway/gateway.toml
 ```
 
@@ -371,26 +371,26 @@ ss -lntp | grep 8080
 x86_64 RPM：
 
 ```bash
-curl -L -o rivulet-gateway-0.1.0-1.x86_64.rpm \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/rivulet-gateway-0.1.0-1.x86_64.rpm
+curl -L -o rivulet-gateway-<version>-1.x86_64.rpm \
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/rivulet-gateway-<version>-1.x86_64.rpm
 
-grep 'rivulet-gateway-0.1.0-1.x86_64.rpm' SHA256SUMS.txt | sha256sum -c -
+grep 'rivulet-gateway-<version>-1.x86_64.rpm' SHA256SUMS.txt | sha256sum -c -
 ```
 
 arm64 RPM：
 
 ```bash
-curl -L -o rivulet-gateway-0.1.0-1.aarch64.rpm \
-  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v0.1.5/rivulet-gateway-0.1.0-1.aarch64.rpm
+curl -L -o rivulet-gateway-<version>-1.aarch64.rpm \
+  https://github.com/hjd92215202/Rivulet-Gateway/releases/download/v<version>/rivulet-gateway-<version>-1.aarch64.rpm
 
-grep 'rivulet-gateway-0.1.0-1.aarch64.rpm' SHA256SUMS.txt | sha256sum -c -
+grep 'rivulet-gateway-<version>-1.aarch64.rpm' SHA256SUMS.txt | sha256sum -c -
 ```
 
 如果服务器上已经 clone 了仓库，可以直接用仓库内校验脚本：
 
 ```bash
-bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-0.1.0-1.x86_64.rpm
-bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-0.1.0-1.aarch64.rpm
+bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-<version>-1.x86_64.rpm
+bash ./packaging/tests/run-linux-validation.sh /path/to/rivulet-gateway-<version>-1.aarch64.rpm
 ```
 
 ### 4. 可选 systemd Smoke
