@@ -27,6 +27,14 @@ Current validation layers:
    File: `packaging/tests/verify-checksums.sh`
    Verifies published artifacts against `SHA256SUMS`.
 
+5. Real-host systemd lifecycle validation
+   File: `scripts/linux-systemd-validate.sh`
+   Uses a temporary validation unit on a Linux host to verify start, restart, stop, and degraded-path behavior.
+
+6. Host-side upgrade and rollback validation
+   File: `scripts/linux-upgrade-rollback-validate.sh`
+   Verifies that a temporary validation deployment can start, upgrade, roll back, and recover service health.
+
 Validation expectations:
 
 - `tar.gz` contains:
@@ -58,13 +66,13 @@ Server prerequisites:
 Current scope limits:
 
 - does not install the package into the real system root
-- does not register or start a real systemd unit
-- does not yet verify upgrade paths, rollback paths, or config migration semantics
+- host-side automation exists, but disposable-VM install and package-manager-native upgrade validation are not complete yet
+- does not yet verify config migration semantics
 
 Next validation layers to add:
 
 - real `rpm -i` / `rpm -U` validation inside disposable Linux VMs
-- systemd enable/start/stop verification
+- systemd validation inside disposable Linux VMs or dedicated validation hosts
 - restart and graceful shutdown checks under load
 - release checksum and signature verification
 

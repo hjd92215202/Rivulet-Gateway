@@ -64,6 +64,7 @@ Server rollout references:
 
 - validation flow: `packaging/SERVER-VALIDATION.md`
 - real-host systemd validation: `docs/LINUX-SYSTEMD-VALIDATION.md`
+- host-side upgrade rollback validation: `docs/LINUX-UPGRADE-ROLLBACK-VALIDATION.md`
 
 ## 中文
 

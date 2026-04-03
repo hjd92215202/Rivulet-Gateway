@@ -40,6 +40,11 @@ Minimum local checks before pushing a release tag:
 - Windows package build
 - Windows packaged binary smoke test
 
+Recommended Linux host checks before stronger production claims:
+
+- `bash ./scripts/linux-systemd-validate.sh --tag <version> --host <host:port>`
+- `bash ./scripts/linux-upgrade-rollback-validate.sh --from-tag <previous> --to-tag <version> --host <host:port>`
+
 Recommended release-local commands on the current Windows development host:
 
 ```powershell

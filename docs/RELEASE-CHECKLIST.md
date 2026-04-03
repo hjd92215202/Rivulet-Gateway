@@ -42,6 +42,11 @@ Release target: `v<version>`
 - [ ] Record failed or skipped validations
 - [ ] Update roadmap follow-up items
 
+### Recommended Linux Host Validation
+
+- [ ] `bash ./scripts/linux-systemd-validate.sh --tag <version> --host <host:port>`
+- [ ] `bash ./scripts/linux-upgrade-rollback-validate.sh --from-tag <previous> --to-tag <version> --host <host:port>`
+
 ## 中文
 
 目标版本：`v<version>`
