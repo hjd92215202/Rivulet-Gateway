@@ -44,6 +44,13 @@ impl GatewayConfigFile {
 
     /// 校验配置中的最小完整性和明显非法值。
     pub fn validate(&self) -> Result<()> {
+        // worker 线程数必须是正整数，避免运行时进入不可预测状态。
+        if self.runtime.worker_threads == 0 {
+            return Err(GatewayError::InvalidConfig(
+                "runtime.worker_threads must be greater than 0".into(),
+            ));
+        }
+
         // listener 至少要有一个，否则网关根本没有入口。
         if self.listeners.is_empty() {
             return Err(GatewayError::InvalidConfig(
@@ -124,7 +131,7 @@ impl GatewayConfigFile {
     /// 把外部配置转成运行时快照。
     pub fn runtime_settings(&self) -> RuntimeSettings {
         RuntimeSettings {
-            // worker 数当前主要用于摘要展示，后面再接更完整的线程模型。
+            // worker 数会在二进制入口构建 Tokio runtime 时生效，并在这里保持可观测快照一致。
             worker_threads: self.runtime.worker_threads,
             // 优雅关闭窗口用秒表达，对运维更直观。
             graceful_shutdown: Duration::from_secs(self.runtime.graceful_shutdown_secs),
@@ -899,6 +906,18 @@ mod tests {
         let error = config.validate().expect_err("config should be invalid");
         match error {
             GatewayError::InvalidConfig(message) => assert!(message.contains("unknown upstream")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_zero_worker_threads() {
+        let mut config = valid_config();
+        config.runtime.worker_threads = 0;
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("worker_threads")),
             other => panic!("unexpected error: {:?}", other),
         }
     }
