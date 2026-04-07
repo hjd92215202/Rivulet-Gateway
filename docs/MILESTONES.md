@@ -135,16 +135,16 @@ Implemented today:
 - Linux arm64 tar.gz
 - Linux arm64 rpm
 - CI packaging and validation
+- CI/release Linux x86_64 + arm64 systemd lifecycle gates
 - nightly benchmark collection
 - checksum generation and verification
 - GitHub Release automation by version tag
 
 Still required before stronger production claims:
 
-- artifact signing
-- real Linux install automation
-- systemd lifecycle validation
-- upgrade and rollback verification
+- stronger per-asset signing policy
+- native Linux install automation in disposable environments
+- upgrade and rollback verification in disposable environments
 
 ## 中文
 
@@ -281,13 +281,13 @@ Still required before stronger production claims:
 - Linux arm64 tar.gz
 - Linux arm64 rpm
 - CI 打包与验证
+- CI/release 中 Linux x86_64 + arm64 的 systemd 生命周期门禁
 - 夜间 benchmark 收集
 - checksum 生成与校验
 - 基于版本标签的 GitHub Release 自动发布
 
 在做更强生产声明前仍需补齐：
 
-- 产物签名
-- 真实 Linux 安装自动化
-- systemd 生命周期验证
-- 升级与回滚验证
+- 更强的逐产物签名策略
+- 一次性环境中的原生 Linux 安装自动化
+- 一次性环境中的升级与回滚验证

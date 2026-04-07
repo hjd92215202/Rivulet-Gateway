@@ -23,7 +23,9 @@ Release target: `v<version>`
 - [ ] CI workflow is green on Linux x86_64
 - [ ] CI workflow is green on Windows x86_64
 - [ ] CI workflow is green on Linux arm64
+- [ ] CI systemd lifecycle gate is green on Linux x86_64 and Linux arm64
 - [ ] Package jobs upload expected artifacts
+- [ ] Release systemd lifecycle gate is green on Linux x86_64 and Linux arm64
 - [ ] Release workflow creates `SHA256SUMS.txt`
 - [ ] Release workflow creates `SHA256SUMS.sig` and `SHA256SUMS.pem`
 - [ ] Release workflow uploads `SBOM.spdx.json`
@@ -77,7 +79,9 @@ Release target: `v<version>`
 - [ ] Linux x86_64 CI 通过
 - [ ] Windows x86_64 CI 通过
 - [ ] Linux arm64 CI 通过
+- [ ] CI 中 Linux x86_64 与 Linux arm64 的 systemd 生命周期门禁通过
 - [ ] package job 上传了预期产物
+- [ ] release workflow 中 Linux x86_64 与 Linux arm64 的 systemd 生命周期门禁通过
 - [ ] release workflow 生成了 `SHA256SUMS.txt`
 - [ ] release workflow 生成了 `SHA256SUMS.sig` 和 `SHA256SUMS.pem`
 - [ ] release workflow 上传了 `SBOM.spdx.json`
@@ -101,3 +105,9 @@ Release target: `v<version>`
 - [ ] 记录已知边界
 - [ ] 记录失败或跳过的验证
 - [ ] 更新路线图后续事项
+
+### 推荐 Linux 主机验证
+
+- [ ] `bash ./scripts/linux-postinstall-validate.sh --tag <version> --host <host:port>`
+- [ ] `bash ./scripts/linux-systemd-validate.sh --tag <version> --host <host:port>`
+- [ ] `bash ./scripts/linux-upgrade-rollback-validate.sh --from-tag <previous> --to-tag <version> --host <host:port>`

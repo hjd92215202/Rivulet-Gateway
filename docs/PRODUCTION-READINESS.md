@@ -52,7 +52,7 @@ Implemented layers:
 ### Known Engineering Gaps
 
 1. `worker_threads` is still a config field, but it is not yet wired into a custom Tokio runtime builder.
-2. Packaging validation is strong at the staged-layout level, but real Linux installation and service lifecycle validation still needs disposable VM coverage.
+2. Packaging validation now includes CI/release systemd lifecycle gates for Linux x86_64 and arm64, but disposable-VM installation and upgrade coverage is still missing.
 3. The benchmark harness is intentionally conservative and local; it is not a substitute for server-grade load testing on Linux.
 4. Release checksums, keyless manifest signing, SBOM export, and provenance attestations now exist, but stronger per-asset signing policy and trust publication still need refinement.
 
@@ -66,6 +66,7 @@ Repository validation:
 - Windows package build and smoke validation
 - Linux package structure validation designed into CI
 - Linux installed-layout smoke validation designed into CI and release workflows
+- Linux systemd lifecycle validation gated in CI and release workflows for x86_64 and arm64 artifacts
 
 Key validation entry points:
 
@@ -121,13 +122,13 @@ Release automation status:
 - checksum verification script exists
 - release workflow signs `SHA256SUMS.txt` with keyless Sigstore (`SHA256SUMS.sig` + `SHA256SUMS.pem`)
 - CI/release workflows emit SBOM and provenance attestations
+- CI/release workflows block publish when Linux x86_64 or arm64 systemd lifecycle gates fail
 
 Remaining release-grade work:
 
-- artifact signing
-- stronger per-asset signature policy
-- upgrade and rollback validation
+- stronger per-asset detached signature policy
 - native Linux install verification in disposable test systems
+- upgrade and rollback verification in disposable test systems
 
 ### Production Use Guidance Right Now
 
@@ -147,7 +148,7 @@ Not recommended yet:
 
 ### Next Bottlenecks To Address
 
-1. Linux real-host benchmark and installation validation
+1. Linux real-host benchmark and disposable-environment install/upgrade validation
 2. downstream keepalive lifecycle improvements beyond conservative sequential mode
 3. chunked transfer support or explicit non-support enforcement across all edges
 4. TLS and certificate lifecycle design
@@ -206,7 +207,7 @@ Not recommended yet:
 ### 已知工程缺口
 
 1. `worker_threads` 仍只是配置字段，还没有接入自定义 Tokio runtime builder。
-2. 打包验证在 staged-layout 层面已经较强，但真实 Linux 安装与服务生命周期验证还需要 disposable VM 覆盖。
+2. 打包验证已覆盖 CI/release 中 Linux x86_64 与 arm64 的 systemd 生命周期门禁，但一次性 VM 环境中的安装与升级覆盖仍然缺失。
 3. benchmark 工具当前故意保持保守且只跑本地，不可替代 Linux 服务器级负载测试。
 4. 发布 checksum、keyless 清单签名、SBOM 与 provenance 已接入，但按单个产物逐一签名和更强信任链发布仍需完善。
 
@@ -220,6 +221,7 @@ Not recommended yet:
 - Windows 打包构建与 smoke 验证
 - Linux 包结构验证已接入 CI
 - Linux 安装后布局 smoke 验证已接入 CI 和 release workflow
+- Linux x86_64 与 arm64 产物的 systemd 生命周期验证已接入 CI 与 release 门禁
 
 关键验证入口：
 
@@ -275,13 +277,13 @@ Not recommended yet:
 - 已有 checksum 校验脚本
 - release workflow 会对 `SHA256SUMS.txt` 做 keyless Sigstore 签名（`SHA256SUMS.sig` + `SHA256SUMS.pem`）
 - CI/release workflow 会产出 SBOM 与 provenance
+- CI/release workflow 在 Linux x86_64 或 arm64 的 systemd 生命周期门禁失败时会阻断后续发布
 
 距离更高等级发布还需补齐：
 
-- 产物签名
-- 更强的按单个产物签名策略
-- 升级与回滚验证
+- 更强的按单个产物逐一 detached 签名策略
 - 在一次性测试系统中完成原生 Linux 安装验证
+- 在一次性测试系统中完成升级与回滚验证
 
 ### 当前生产使用建议
 
@@ -301,7 +303,7 @@ Not recommended yet:
 
 ### 下一批瓶颈
 
-1. Linux 真实主机 benchmark 与安装验证
+1. Linux 真实主机 benchmark 与一次性环境安装/升级验证
 2. 下游 keepalive 生命周期继续增强（超出当前保守顺序模式）
 3. 对 chunked transfer 的支持，或更彻底的显式非支持策略
 4. TLS 与证书生命周期设计

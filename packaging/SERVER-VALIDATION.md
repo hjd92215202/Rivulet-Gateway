@@ -39,6 +39,10 @@ Current validation layers:
    File: `scripts/linux-upgrade-rollback-validate.sh`
    Verifies that a temporary validation deployment can start, upgrade, roll back, and recover service health.
 
+8. CI/release lifecycle gates
+   Files: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
+   Run Linux x86_64 and Linux arm64 systemd lifecycle validation on packaged `tar.gz` and `rpm` artifacts before publish/provenance continuation.
+
 Validation expectations:
 
 - `tar.gz` contains:
@@ -70,8 +74,8 @@ Server prerequisites:
 
 Current scope limits:
 
-- does not install the package into the real system root
-- host-side automation exists, but disposable-VM install and package-manager-native upgrade validation are not complete yet
+- host-side lifecycle checks exist, but package-manager-native install/upgrade validation in disposable VMs is not complete yet
+- CI/release gates currently validate service lifecycle on hosted runners, not disposable VM snapshots
 - does not yet verify config migration semantics
 
 Next validation layers to add:
@@ -108,6 +112,22 @@ Next validation layers to add:
    文件：`packaging/tests/verify-checksums.sh`
    用 `SHA256SUMS` 校验发布产物。
 
+5. 真实主机安装路径验证
+   文件：`scripts/linux-postinstall-validate.sh`
+   在干净 Linux 验证主机安装打包服务，启动真实服务并验证健康路径、降级路径，支持验证后自动清理。
+
+6. 临时单元 systemd 生命周期验证
+   文件：`scripts/linux-systemd-validate.sh`
+   在 Linux 主机使用临时验证单元校验 start/restart/stop 与降级路径行为。
+
+7. 主机侧升级与回滚验证
+   文件：`scripts/linux-upgrade-rollback-validate.sh`
+   验证临时部署可启动、可升级、可回滚，并在回滚后恢复服务健康。
+
+8. CI/release 生命周期门禁
+   文件：`.github/workflows/ci.yml`、`.github/workflows/release.yml`
+   在发布前对 Linux x86_64 与 Linux arm64 的 `tar.gz` 和 `rpm` 产物执行 systemd 生命周期门禁验证。
+
 验证预期：
 
 - `tar.gz` 必须包含：
@@ -138,9 +158,9 @@ bash ./packaging/tests/verify-checksums.sh ./SHA256SUMS.txt .
 
 当前范围限制：
 
-- 还不会把包真实安装到系统根目录
-- 还不会注册或启动真实 systemd 单元
-- 还没有验证升级路径、回滚路径或配置迁移语义
+- 已有主机侧生命周期验证，但一次性 VM 中的包管理器原生安装/升级验证仍未完成
+- CI/release 门禁当前在 hosted runner 上执行服务生命周期验证，不等同于 disposable VM 快照验证
+- 还没有验证配置迁移语义
 
 下一层验证建议：
 

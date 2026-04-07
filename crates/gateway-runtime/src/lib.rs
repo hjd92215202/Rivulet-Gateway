@@ -763,9 +763,7 @@ mod tests {
 
         tokio::spawn(async move {
             let (mut stream, _) = backend.accept().await.expect("accept backend");
-            for (index, (path, body)) in [("/one", "one"), ("/two", "two")]
-                .into_iter()
-                .enumerate()
+            for (index, (path, body)) in [("/one", "one"), ("/two", "two")].into_iter().enumerate()
             {
                 let mut request = Vec::new();
                 let mut temp = [0_u8; 1024];

@@ -255,6 +255,128 @@ jobs:
             dist/rpmbuild/aarch64-unknown-linux-gnu/RPMS/**/*.rpm
           if-no-files-found: error
 
+  systemd-lifecycle-linux-x86_64:
+    name: Systemd Lifecycle Linux x86_64
+    runs-on: ubuntu-24.04
+    needs:
+      - package-linux-x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Linux x86_64 artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: rivulet-linux-x86_64
+          path: ci-systemd-assets/x86_64
+
+      - name: Resolve Linux x86_64 package artifacts
+        id: artifacts
+        run: |
+          tarball="$(find ci-systemd-assets/x86_64 -type f -name '*.tar.gz' | head -n 1)"
+          rpm_package="$(find ci-systemd-assets/x86_64 -type f -name '*.rpm' | head -n 1)"
+
+          if [[ -z "$tarball" || -z "$rpm_package" ]]; then
+            echo "failed to resolve tar.gz or rpm artifact" >&2
+            exit 1
+          fi
+
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "rpm_package=$rpm_package" >> "$GITHUB_OUTPUT"
+
+      - name: Validate systemd lifecycle (tar.gz)
+        run: |
+          bash ./scripts/linux-systemd-validate.sh \
+            --artifact "${{ steps.artifacts.outputs.tarball }}" \
+            --format tar.gz \
+            --host localhost \
+            --gateway-port 18184 \
+            --backend-port 19184 \
+            --label ci-systemd-x86-tar \
+            --work-dir "$RUNNER_TEMP/rivulet-ci-systemd-x86-tar"
+
+      - name: Validate systemd lifecycle (rpm)
+        run: |
+          bash ./scripts/linux-systemd-validate.sh \
+            --artifact "${{ steps.artifacts.outputs.rpm_package }}" \
+            --format rpm \
+            --host localhost \
+            --gateway-port 18185 \
+            --backend-port 19185 \
+            --label ci-systemd-x86-rpm \
+            --work-dir "$RUNNER_TEMP/rivulet-ci-systemd-x86-rpm"
+
+      - name: Upload Linux x86_64 systemd lifecycle reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-ci-systemd-linux-x86_64
+          path: |
+            ${{ runner.temp }}/rivulet-ci-systemd-x86-tar
+            ${{ runner.temp }}/rivulet-ci-systemd-x86-rpm
+          if-no-files-found: ignore
+
+  systemd-lifecycle-linux-arm64:
+    name: Systemd Lifecycle Linux arm64
+    runs-on: ubuntu-24.04-arm
+    needs:
+      - package-linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Linux arm64 artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: rivulet-linux-arm64
+          path: ci-systemd-assets/arm64
+
+      - name: Resolve Linux arm64 package artifacts
+        id: artifacts
+        run: |
+          tarball="$(find ci-systemd-assets/arm64 -type f -name '*.tar.gz' | head -n 1)"
+          rpm_package="$(find ci-systemd-assets/arm64 -type f -name '*.rpm' | head -n 1)"
+
+          if [[ -z "$tarball" || -z "$rpm_package" ]]; then
+            echo "failed to resolve tar.gz or rpm artifact" >&2
+            exit 1
+          fi
+
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "rpm_package=$rpm_package" >> "$GITHUB_OUTPUT"
+
+      - name: Validate systemd lifecycle (tar.gz)
+        run: |
+          bash ./scripts/linux-systemd-validate.sh \
+            --artifact "${{ steps.artifacts.outputs.tarball }}" \
+            --format tar.gz \
+            --host localhost \
+            --gateway-port 18284 \
+            --backend-port 19284 \
+            --label ci-systemd-arm-tar \
+            --work-dir "$RUNNER_TEMP/rivulet-ci-systemd-arm-tar"
+
+      - name: Validate systemd lifecycle (rpm)
+        run: |
+          bash ./scripts/linux-systemd-validate.sh \
+            --artifact "${{ steps.artifacts.outputs.rpm_package }}" \
+            --format rpm \
+            --host localhost \
+            --gateway-port 18285 \
+            --backend-port 19285 \
+            --label ci-systemd-arm-rpm \
+            --work-dir "$RUNNER_TEMP/rivulet-ci-systemd-arm-rpm"
+
+      - name: Upload Linux arm64 systemd lifecycle reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-ci-systemd-linux-arm64
+          path: |
+            ${{ runner.temp }}/rivulet-ci-systemd-arm-tar
+            ${{ runner.temp }}/rivulet-ci-systemd-arm-rpm
+          if-no-files-found: ignore
+
   supply-chain:
     name: Supply Chain Checks
     runs-on: ubuntu-24.04
@@ -262,6 +384,8 @@ jobs:
       - package-linux-x86_64
       - package-windows-x86_64
       - package-linux-arm64
+      - systemd-lifecycle-linux-x86_64
+      - systemd-lifecycle-linux-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v5

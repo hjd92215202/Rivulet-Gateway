@@ -17,6 +17,7 @@ This document defines the formal release process for `Rivulet Gateway / 溪流�
 - Nightly benchmark collection runs `.github/workflows/nightly-benchmark.yml`.
 - Pushing a tag such as `v0.1.5` runs `.github/workflows/release.yml`.
 - The release workflow builds Linux x86_64, Linux arm64, and Windows x86_64 artifacts.
+- CI and release workflows both run Linux x86_64 and Linux arm64 systemd lifecycle gates on packaged artifacts.
 - The publish job creates or updates the GitHub Release and uploads packaged assets, `SHA256SUMS.txt`, keyless signature outputs, and SBOM.
 - CI and release workflows also generate supply-chain provenance attestations for built artifacts.
 
@@ -28,7 +29,7 @@ This document defines the formal release process for `Rivulet Gateway / 溪流�
 4. Commit any final release-prep changes with a clear `feat:` or `docs:` message.
 5. Create an annotated tag such as `git tag -a v0.1.5 -m "Rivulet Gateway v0.1.5"`.
 6. Push the branch and the tag to GitHub.
-7. Monitor `.github/workflows/release.yml` until all packaging jobs and the publish job succeed.
+7. Monitor `.github/workflows/release.yml` until all packaging jobs, systemd lifecycle gates, and the publish job succeed.
 8. Check that the GitHub Release page contains `zip`, `tar.gz`, `rpm`, `SHA256SUMS.txt`, `SHA256SUMS.sig`, `SHA256SUMS.pem`, and `SBOM.spdx.json`, and that every asset filename matches the tag version.
 9. Record remaining risks and post-release follow-up items in the roadmap.
 
@@ -74,7 +75,7 @@ The release process now includes keyless checksum signing, SBOM export, and prov
 
 - No detached per-asset signature policy yet (currently signs checksum manifest as trust anchor).
 - No disposable-VM upgrade validation yet.
-- No systemd lifecycle validation in CI yet.
+- Systemd lifecycle is now gated in CI/release, but disposable VM coverage is still pending.
 
 ## 中文
 
@@ -93,6 +94,7 @@ The release process now includes keyless checksum signing, SBOM export, and prov
 - 夜间基线压测触发 `.github/workflows/nightly-benchmark.yml`。
 - 推送 `v0.1.5` 这类 tag 会触发 `.github/workflows/release.yml`。
 - release workflow 会构建 Linux x86_64、Linux arm64、Windows x86_64 三类产物。
+- CI 与 release workflow 都会在打包产物上执行 Linux x86_64 与 Linux arm64 的 systemd 生命周期门禁验证。
 - publish job 会创建或更新 GitHub Release，并上传打包产物、`SHA256SUMS.txt`、keyless 签名结果和 SBOM。
 - CI 与 release workflow 还会为构建产物生成 supply-chain provenance 证明。
 
@@ -104,7 +106,7 @@ The release process now includes keyless checksum signing, SBOM export, and prov
 4. 用明确的 `feat:` 或 `docs:` 提交最后的发布准备改动。
 5. 创建注解 tag，例如 `git tag -a v0.1.5 -m "Rivulet Gateway v0.1.5"`。
 6. 将分支和 tag 一起推送到 GitHub。
-7. 观察 `.github/workflows/release.yml`，直到所有打包 job 和 publish job 成功。
+7. 观察 `.github/workflows/release.yml`，直到所有打包 job、systemd 生命周期门禁 job 和 publish job 成功。
 8. 检查 GitHub Release 页面是否包含 `zip`、`tar.gz`、`rpm`、`SHA256SUMS.txt`、`SHA256SUMS.sig`、`SHA256SUMS.pem`、`SBOM.spdx.json`，并确认所有产物文件名与 tag 版本一致。
 9. 把剩余风险和后续事项回填到路线图。
 
@@ -144,4 +146,4 @@ cargo test --workspace
 
 - 还没有按单个产物逐一签名（当前以校验清单签名作为信任锚）。
 - 还没有基于 disposable VM 的升级验证。
-- CI 里还没有 systemd 生命周期验证。
+- systemd 生命周期已进入 CI/release 门禁，但 disposable VM 覆盖仍未完成。
