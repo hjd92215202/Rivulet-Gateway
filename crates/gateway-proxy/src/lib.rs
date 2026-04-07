@@ -1264,12 +1264,28 @@ pub fn status_code_for_error(error: &GatewayError) -> u16 {
     status_and_reason_for_error(error).0
 }
 
+fn is_peer_disconnect_io_message(message: &str) -> bool {
+    // 各平台 I/O 错误文本不同，这里按关键片段做“保守识别”。
+    let lower = message.to_ascii_lowercase();
+    lower.contains("connection reset")
+        || lower.contains("broken pipe")
+        || lower.contains("forcibly closed")
+        || lower.contains("connection aborted")
+}
+
 pub fn is_graceful_downstream_close(error: &GatewayError) -> bool {
     matches!(
         error,
         GatewayError::Io(message)
             if message == "downstream connection closed by peer"
                 || message.starts_with("downstream keepalive idle timeout after ")
+                || (
+                    (
+                        message.starts_with("read downstream request: ")
+                            || message.starts_with("write downstream response: ")
+                            || message.starts_with("flush downstream response: ")
+                    ) && is_peer_disconnect_io_message(message)
+                )
     )
 }
 
@@ -3459,6 +3475,28 @@ mod tests {
         assert!(text.starts_with("HTTP/1.1 429 Too Many Requests"));
     }
 
+    #[test]
+    fn graceful_downstream_close_accepts_peer_reset_on_read() {
+        let error = GatewayError::Io(
+            "read downstream request: connection reset by peer (os error 104)".into(),
+        );
+        assert!(is_graceful_downstream_close(&error));
+    }
+
+    #[test]
+    fn graceful_downstream_close_accepts_peer_disconnect_on_write() {
+        let error = GatewayError::Io(
+            "write downstream response: An existing connection was forcibly closed by the remote host. (os error 10054)".into(),
+        );
+        assert!(is_graceful_downstream_close(&error));
+    }
+
+    #[test]
+    fn graceful_downstream_close_rejects_upstream_timeout_error() {
+        let error = GatewayError::Io("read upstream response timed out after 50ms".into());
+        assert!(!is_graceful_downstream_close(&error));
+    }
+
     #[tokio::test]
     async fn rejects_duplicate_host_headers() {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -3702,6 +3740,34 @@ mod tests {
                 "expected transfer-encoding with content-length rejection, got {:?}",
                 other
             ),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_half_closed_request_before_headers_complete() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(b"GET /partial HTTP/1.1\r\nHost: example.test\r\n")
+            .await
+            .expect("write partial request");
+        client.shutdown().await.expect("shutdown write half");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Protocol(message)) => {
+                assert!(message.contains("before request completed"));
+            }
+            other => panic!("expected half-closed request rejection, got {:?}", other),
         }
     }
 

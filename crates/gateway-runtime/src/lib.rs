@@ -383,7 +383,7 @@ mod tests {
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{Duration, sleep, timeout};
 
     #[tokio::test]
     async fn run_until_serves_proxy_traffic() {
@@ -884,6 +884,7 @@ mod tests {
         assert!(text.contains("application/json; charset=utf-8"));
         assert!(text.contains("\"listeners\":1"));
         assert!(text.contains("\"routes\":["));
+        assert!(text.contains("\"worker_threads\":4"));
 
         server.await.expect("server task").expect("gateway ok");
     }
@@ -997,6 +998,105 @@ mod tests {
         let second_text = String::from_utf8(second).expect("second response utf-8");
         assert!(second_text.starts_with("HTTP/1.1 200 OK"));
         assert!(second_text.ends_with("two"));
+
+        server.await.expect("server task").expect("gateway ok");
+    }
+
+    #[tokio::test]
+    async fn run_until_closes_connection_after_downstream_keepalive_request_cap() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let mut request = Vec::new();
+            let mut temp = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut temp).await.expect("read backend request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&temp[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok",
+                )
+                .await
+                .expect("write backend response");
+        });
+
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                downstream_keepalive_idle_timeout_ms: 2_000,
+                downstream_keepalive_max_requests: 1,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(300)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(40)).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", listener_port))
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /one HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write first request");
+        let first = read_http_response(&mut client).await;
+        let first_text = String::from_utf8(first).expect("first response utf-8");
+        assert!(first_text.starts_with("HTTP/1.1 200 OK"));
+        assert!(first_text.ends_with("ok"));
+
+        // 命中单连接请求上限后，网关应主动回收连接；后续读取应该看到 EOF。
+        let mut tail = [0_u8; 16];
+        let closed = timeout(Duration::from_millis(250), client.read(&mut tail))
+            .await
+            .expect("read should complete")
+            .expect("read should not fail");
+        assert_eq!(closed, 0);
 
         server.await.expect("server task").expect("gateway ok");
     }
