@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -251,4 +253,54 @@ jobs:
           path: |
             dist/aarch64-unknown-linux-gnu/*.tar.gz
             dist/rpmbuild/aarch64-unknown-linux-gnu/RPMS/**/*.rpm
+          if-no-files-found: error
+
+  supply-chain:
+    name: Supply Chain Checks
+    runs-on: ubuntu-24.04
+    needs:
+      - package-linux-x86_64
+      - package-windows-x86_64
+      - package-linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: ci-assets
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ci-assets
+          format: spdx-json
+          output-file: ci-assets/SBOM.spdx.json
+
+      - name: Build SHA256 manifest
+        run: |
+          (
+            cd ci-assets
+            find . -type f -printf '%P\0' | sort -z | xargs -0 sha256sum > ../CI-SHA256SUMS.txt
+          )
+
+      - name: Verify checksums
+        run: bash ./packaging/tests/verify-checksums.sh ./CI-SHA256SUMS.txt ./ci-assets
+
+      - name: Attest build provenance
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            ci-assets/**/*
+            CI-SHA256SUMS.txt
+
+      - name: Upload supply-chain report
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-supply-chain
+          path: |
+            ci-assets/SBOM.spdx.json
+            CI-SHA256SUMS.txt
           if-no-files-found: error

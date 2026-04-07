@@ -47,14 +47,14 @@ Implemented layers:
 - no downstream request pipelining; current model supports only sequential keepalive requests on one connection
 - no real auth, rate limit, WAF, or policy engine yet
 - no hot reload or dynamic config plane yet
-- no signed release artifacts yet
+- no per-asset detached signatures yet (current trust anchor is a keyless-signed checksum manifest)
 
 ### Known Engineering Gaps
 
 1. `worker_threads` is still a config field, but it is not yet wired into a custom Tokio runtime builder.
 2. Packaging validation is strong at the staged-layout level, but real Linux installation and service lifecycle validation still needs disposable VM coverage.
 3. The benchmark harness is intentionally conservative and local; it is not a substitute for server-grade load testing on Linux.
-4. Release checksums exist, but artifact signing and trust-chain publication are not implemented.
+4. Release checksums, keyless manifest signing, SBOM export, and provenance attestations now exist, but stronger per-asset signing policy and trust publication still need refinement.
 
 ### Validation Completed
 
@@ -119,11 +119,13 @@ Release automation status:
 - CI builds and validates package artifacts
 - release workflow produces artifacts and checksum manifest
 - checksum verification script exists
+- release workflow signs `SHA256SUMS.txt` with keyless Sigstore (`SHA256SUMS.sig` + `SHA256SUMS.pem`)
+- CI/release workflows emit SBOM and provenance attestations
 
 Remaining release-grade work:
 
 - artifact signing
-- provenance / SBOM strategy
+- stronger per-asset signature policy
 - upgrade and rollback validation
 - native Linux install verification in disposable test systems
 
@@ -199,14 +201,14 @@ Not recommended yet:
 - 没有下游请求 pipelining；当前模型只支持同连接顺序 keepalive 请求
 - 还没有真正的认证、限流、WAF 或策略引擎
 - 还没有热更新或动态配置面
-- 还没有发布产物签名
+- 还没有“每个产物单独签名”的完整策略（当前信任锚是 keyless 签名的 checksum 清单）
 
 ### 已知工程缺口
 
 1. `worker_threads` 仍只是配置字段，还没有接入自定义 Tokio runtime builder。
 2. 打包验证在 staged-layout 层面已经较强，但真实 Linux 安装与服务生命周期验证还需要 disposable VM 覆盖。
 3. benchmark 工具当前故意保持保守且只跑本地，不可替代 Linux 服务器级负载测试。
-4. 发布 checksum 已存在，但产物签名与信任链发布尚未实现。
+4. 发布 checksum、keyless 清单签名、SBOM 与 provenance 已接入，但按单个产物逐一签名和更强信任链发布仍需完善。
 
 ### 已完成验证
 
@@ -271,11 +273,13 @@ Not recommended yet:
 - CI 会构建并验证打包产物
 - release workflow 会产出发行包和 checksum 清单
 - 已有 checksum 校验脚本
+- release workflow 会对 `SHA256SUMS.txt` 做 keyless Sigstore 签名（`SHA256SUMS.sig` + `SHA256SUMS.pem`）
+- CI/release workflow 会产出 SBOM 与 provenance
 
 距离更高等级发布还需补齐：
 
 - 产物签名
-- provenance / SBOM 策略
+- 更强的按单个产物签名策略
 - 升级与回滚验证
 - 在一次性测试系统中完成原生 Linux 安装验证
 

@@ -25,6 +25,9 @@ Release target: `v<version>`
 - [ ] CI workflow is green on Linux arm64
 - [ ] Package jobs upload expected artifacts
 - [ ] Release workflow creates `SHA256SUMS.txt`
+- [ ] Release workflow creates `SHA256SUMS.sig` and `SHA256SUMS.pem`
+- [ ] Release workflow uploads `SBOM.spdx.json`
+- [ ] Supply-chain provenance attestation job succeeds
 - [ ] GitHub Release page is created
 
 ### Release Assets
@@ -35,6 +38,9 @@ Release target: `v<version>`
 - [ ] Linux arm64 `.tar.gz`
 - [ ] Linux arm64 `.rpm`
 - [ ] `SHA256SUMS.txt`
+- [ ] `SHA256SUMS.sig`
+- [ ] `SHA256SUMS.pem`
+- [ ] `SBOM.spdx.json`
 
 ### Post-Release Notes
 
@@ -73,6 +79,9 @@ Release target: `v<version>`
 - [ ] Linux arm64 CI 通过
 - [ ] package job 上传了预期产物
 - [ ] release workflow 生成了 `SHA256SUMS.txt`
+- [ ] release workflow 生成了 `SHA256SUMS.sig` 和 `SHA256SUMS.pem`
+- [ ] release workflow 上传了 `SBOM.spdx.json`
+- [ ] supply-chain provenance 证明步骤通过
 - [ ] GitHub Release 页面已创建
 
 ### 发布产物
@@ -83,6 +92,9 @@ Release target: `v<version>`
 - [ ] Linux arm64 `.tar.gz`
 - [ ] Linux arm64 `.rpm`
 - [ ] `SHA256SUMS.txt`
+- [ ] `SHA256SUMS.sig`
+- [ ] `SHA256SUMS.pem`
+- [ ] `SBOM.spdx.json`
 
 ### 发布后记录
 

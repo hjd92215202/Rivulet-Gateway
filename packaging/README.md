@@ -124,7 +124,10 @@ GitHub CI/CD 策略：
 - CI 同时会构建并 smoke 测试 Windows x86_64、Linux x86_64、Linux arm64 包。
 - CI 会在上传产物前校验 Linux `tar.gz` 和 `rpm` 的内容结构。
 - CI 会解压 Linux staged 产物，并对安装后文件系统布局执行 smoke 测试。
+- CI 会汇总打包产物并生成 SBOM 与 `CI-SHA256SUMS.txt`。
+- 非 PR 场景下 CI 会生成 supply-chain provenance 证明。
 - 推送 `v0.1.0` 这类标签时会自动发布 release assets。
+- release workflow 会生成 `SBOM.spdx.json`，签名 `SHA256SUMS.txt` 并上传 `SHA256SUMS.sig`、`SHA256SUMS.pem`。
 - 如果仓库可见性或 runner 策略不允许托管 arm64 runner，需要把对应 job 替换为自托管 arm64 runner 标签。
 - 另有独立夜间工作流执行保守 benchmark 基线，并上传 CSV 结果用于趋势跟踪。
 
