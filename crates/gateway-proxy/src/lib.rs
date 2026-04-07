@@ -1531,6 +1531,7 @@ mod tests {
                         token: "share-secret".into(),
                         share_id: "share-001".into(),
                         scope: "preview".into(),
+                        resource_prefixes: vec!["/share/view".into()],
                     }],
                 },
             }],
@@ -1611,6 +1612,7 @@ mod tests {
                         token: "share-secret".into(),
                         share_id: "share-001".into(),
                         scope: "preview".into(),
+                        resource_prefixes: vec!["/share/view".into()],
                     }],
                 },
             }],
@@ -1672,6 +1674,105 @@ mod tests {
             }
             other => panic!("expected shared access rejection, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn rejects_request_outside_share_resource_prefix_before_upstream() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "share".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/share/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec!["request-id".into()],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: RouteShareConfig {
+                    query_token_name: "share_token".into(),
+                    grants: vec![RouteShareGrantConfig {
+                        token: "share-secret".into(),
+                        share_id: "share-001".into(),
+                        scope: "preview".into(),
+                        resource_prefixes: vec!["/share/view".into()],
+                    }],
+                },
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /share/manage?share_token=share-secret HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("gateway task");
+        match outcome {
+            Err(ProxyConnectionError {
+                error: GatewayError::Forbidden(message),
+                request: Some(request),
+                retries,
+            }) => {
+                assert!(message.contains("/share/manage"));
+                assert_eq!(
+                    request.request_id.as_deref(),
+                    Some("edge:example.test:/share/manage")
+                );
+                assert_eq!(request.share_id, None);
+                assert_eq!(retries, 0);
+            }
+            other => panic!("expected forbidden shared path rejection, got {:?}", other),
+        }
+
+        // 越权请求应该在网关入口处被拒绝，不应触发上游 accept。
+        let backend_accept = timeout(Duration::from_millis(180), backend.accept()).await;
+        assert!(backend_accept.is_err());
     }
 
     #[tokio::test]

@@ -413,6 +413,10 @@ pub struct RouteShareGrantConfig {
     pub share_id: String,
     /// 注入给上游的分享作用域。
     pub scope: String,
+    /// 当前分享授权允许访问的资源前缀。
+    /// 空列表表示不额外缩窄资源边界，只靠整条路由兜底。
+    #[serde(default)]
+    pub resource_prefixes: Vec<String>,
 }
 
 impl RouteShareGrantConfig {
@@ -422,6 +426,7 @@ impl RouteShareGrantConfig {
             token: self.token.clone(),
             share_id: self.share_id.clone(),
             scope: self.scope.clone(),
+            resource_prefixes: self.resource_prefixes.clone(),
         }
     }
 }
@@ -694,6 +699,26 @@ fn validate_route_share(share: &RouteShareConfig, scope: &str) -> Result<()> {
                 grant_scope
             )));
         }
+        if grant
+            .resource_prefixes
+            .iter()
+            .any(|prefix| prefix.trim().is_empty())
+        {
+            return Err(GatewayError::InvalidConfig(format!(
+                "{} resource_prefixes must not contain empty values",
+                grant_scope
+            )));
+        }
+        if grant
+            .resource_prefixes
+            .iter()
+            .any(|prefix| !prefix.starts_with('/'))
+        {
+            return Err(GatewayError::InvalidConfig(format!(
+                "{} resource_prefixes must start with /",
+                grant_scope
+            )));
+        }
     }
 
     Ok(())
@@ -896,11 +921,31 @@ mod tests {
             token: "share-secret".into(),
             share_id: "share-001".into(),
             scope: "".into(),
+            resource_prefixes: Vec::new(),
         }];
 
         let error = config.validate().expect_err("config should be invalid");
         match error {
             GatewayError::InvalidConfig(message) => assert!(message.contains("scope")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_share_resource_prefix_without_leading_slash() {
+        let mut config = valid_config();
+        config.routes[0].share.grants = vec![RouteShareGrantConfig {
+            token: "share-secret".into(),
+            share_id: "share-001".into(),
+            scope: "preview".into(),
+            resource_prefixes: vec!["share/view".into()],
+        }];
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => {
+                assert!(message.contains("resource_prefixes"))
+            }
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -1183,6 +1228,7 @@ query_token_name = "share_key"
 token = "share-secret"
 share_id = "share-001"
 scope = "preview"
+resource_prefixes = ["/share/view"]
 "#,
         )
         .expect("write config file");
@@ -1195,5 +1241,9 @@ scope = "preview"
         assert_eq!(loaded.routes[0].share.grants[0].token, "share-secret");
         assert_eq!(loaded.routes[0].share.grants[0].share_id, "share-001");
         assert_eq!(loaded.routes[0].share.grants[0].scope, "preview");
+        assert_eq!(
+            loaded.routes[0].share.grants[0].resource_prefixes,
+            vec!["/share/view".to_string()]
+        );
     }
 }

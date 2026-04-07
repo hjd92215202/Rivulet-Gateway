@@ -374,7 +374,7 @@ impl RouteSharePolicy {
     }
 
     /// 根据 query token 匹配分享授权。
-    /// 第一版故意只做显式 token 命中，不做模糊兜底。
+    /// 第二步在显式 token 命中的基础上，再收紧到明确资源前缀边界。
     pub fn authorize(&self, request: &mut RequestContext) -> Result<()> {
         if !self.is_enabled() {
             return Ok(());
@@ -398,6 +398,20 @@ impl RouteSharePolicy {
                 ))
             })?;
 
+        // token 命中后如果还配置了资源边界，就必须继续校验路径是否落在授权范围内。
+        // 这里故意使用最直观的前缀语义，避免在第一版资源隔离里引入复杂匹配规则。
+        if !grant.resource_prefixes.is_empty()
+            && !grant
+                .resource_prefixes
+                .iter()
+                .any(|prefix| request.path.starts_with(prefix))
+        {
+            return Err(GatewayError::Forbidden(format!(
+                "shared access is not allowed for path {}",
+                request.path
+            )));
+        }
+
         request.set_share_access(&grant.share_id, &grant.scope);
         Ok(())
     }
@@ -411,6 +425,9 @@ pub struct RouteShareGrant {
     pub share_id: String,
     /// 分享访问的语义作用域，例如 read / preview。
     pub scope: String,
+    /// 这条分享授权允许访问的资源路径前缀集合。
+    /// 空列表表示只做“令牌命中”校验，不额外加资源边界。
+    pub resource_prefixes: Vec<String>,
 }
 
 /// 上游节点描述只保留“如何连过去”所需的最小字段。
@@ -688,6 +705,7 @@ mod tests {
                 token: "share-secret".into(),
                 share_id: "share-001".into(),
                 scope: "read".into(),
+                resource_prefixes: vec!["/share/".into()],
             }],
         };
 
@@ -704,5 +722,32 @@ mod tests {
                 ("X-Rivulet-Share-Scope".into(), "read".into()),
             ]
         );
+    }
+
+    #[test]
+    fn route_share_policy_rejects_request_outside_resource_prefix() {
+        let mut request =
+            RequestContext::new("edge", "example.test", "/share/manage", HttpMethod::Get);
+        request.query = Some("share_token=share-secret".into());
+
+        let policy = RouteSharePolicy {
+            query_token_name: "share_token".into(),
+            grants: vec![RouteShareGrant {
+                token: "share-secret".into(),
+                share_id: "share-001".into(),
+                scope: "read".into(),
+                resource_prefixes: vec!["/share/view".into()],
+            }],
+        };
+
+        let error = policy
+            .authorize(&mut request)
+            .expect_err("share path should be forbidden");
+        match error {
+            GatewayError::Forbidden(message) => {
+                assert!(message.contains("/share/manage"));
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
     }
 }

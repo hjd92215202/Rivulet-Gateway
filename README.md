@@ -32,7 +32,7 @@ Current kernel cut:
 - strongly typed config model
 - route matching core
 - route-level auth entry with static bearer and query token policies
-- route-level shared-access isolation with scoped upstream header injection
+- route-level shared-access isolation with resource-prefix boundaries and scoped upstream header injection
 - route-level in-memory fixed-window rate limiting
 - filter chain abstraction
 - upstream registry with round-robin selection
@@ -120,7 +120,7 @@ Project policy docs:
 - 强类型配置模型
 - 路由匹配核心
 - 路由级鉴权入口，支持静态 Bearer Token 与 Query Token
-- 路由级分享访问隔离，可把分享令牌解析成稳定的上游作用域头
+- 路由级分享访问隔离，支持资源前缀边界并可把分享令牌解析成稳定的上游作用域头
 - 路由级内存固定窗口限流
 - 过滤器链抽象
 - 带轮询选择的上游注册中心

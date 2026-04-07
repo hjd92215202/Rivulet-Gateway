@@ -66,6 +66,7 @@ query_token_name = "share_token"
 token = "dev-share-token"
 share_id = "share-preview-001"
 scope = "preview"
+resource_prefixes = ["/v1/public/"]
 
 [routes.rate_limit]
 requests = 120
