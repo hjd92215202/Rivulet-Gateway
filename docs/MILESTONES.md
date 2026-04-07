@@ -4,7 +4,7 @@
 
 Project: `Rivulet Gateway / 溪流网关`
 
-Baseline date: April 2, 2026
+Baseline date: April 7, 2026
 
 This roadmap turns the current repository state into staged milestones with exit criteria.
 It is intentionally conservative: the target is production-safe progress, not maximum feature velocity.
@@ -56,17 +56,24 @@ Goal:
 
 - support controlled production ingress for simple HTTP/1.1 traffic classes
 
+Status:
+
+- in progress, TLS dual-track gate is closed and accepted
+
 Required work:
 
-- TLS termination design and implementation
 - better downstream keepalive handling
+- local hot-reload control path (`SIGHUP` + loopback admin endpoint) with atomic config swap semantics
+  first cut keeps listener address/port changes as restart-required
 - structured access logging and operational controls
 - stronger passive and active health behavior
+- public API reliability and capacity gates on Linux x86_64 + arm64
 - upgrade and rollback validation in disposable environments
 - signed release artifacts
 
 Exit criteria:
 
+- dual-track TLS path (external TLS first + built-in Rustls) stays green under workspace tests
 - Linux server benchmark campaign completed
 - package installation and service lifecycle validation automated in disposable Linux environments
 - release signing and checksum verification documented and working
@@ -138,12 +145,15 @@ Implemented today:
 - CI/release Linux x86_64 + arm64 systemd lifecycle gates
 - explicit protocol rejection matrix for unsupported transfer-encoding paths
 - `worker_threads` wired into runtime bootstrap with fail-fast validation
+- dual-track TLS listener support with fail-fast cert/key checks and passing HTTPS runtime test
 - nightly benchmark collection
 - checksum generation and verification
 - GitHub Release automation by version tag
 
 Still required before stronger production claims:
 
+- local hot-reload control path with atomic config swap and failure rollback behavior
+- public API reliability/capacity gates with stable SLO reporting
 - stronger per-asset signing policy
 - native Linux install automation in disposable environments
 - upgrade and rollback verification in disposable environments
@@ -152,7 +162,7 @@ Still required before stronger production claims:
 
 项目：`Rivulet Gateway / 溪流网关`
 
-基线日期：2026 年 4 月 2 日
+基线日期：2026 年 4 月 7 日
 
 这份路线图把当前仓库状态拆成分阶段里程碑，并为每个阶段定义退出标准。
 整体策略刻意保守：我们的目标是可安全推进到生产，而不是追求最快功能速度。
@@ -204,17 +214,24 @@ Still required before stronger production claims:
 
 - 支持受控生产环境中的简单 HTTP/1.1 流量入口
 
+状态：
+
+- 进行中，TLS 双轨门禁已收口并通过验收
+
 必要工作：
 
-- TLS termination 设计与实现
 - 更完整的下游 keepalive 生命周期处理
+- 本地热重载控制路径（`SIGHUP` + loopback 管理端点）与原子配置切换语义
+  首版保持“监听地址/端口变更需重启”边界
 - 结构化 access log 与运维控制
 - 更强的被动与主动健康行为
+- Linux x86_64 + arm64 的公网 API 可靠性与容量门禁
 - 在一次性环境里完成升级和回滚验证
 - 发布产物签名
 
 退出标准：
 
+- 双轨 TLS 路径（外置 TLS 优先 + 内建 Rustls）在 workspace 测试中持续稳定通过
 - Linux 服务器 benchmark 活动完成
 - 在一次性 Linux 环境中自动化完成安装与服务生命周期验证
 - 发布签名和 checksum 校验已文档化并实际跑通
@@ -286,12 +303,15 @@ Still required before stronger production claims:
 - CI/release 中 Linux x86_64 + arm64 的 systemd 生命周期门禁
 - 对不支持 transfer-encoding 路径的显式协议拒绝矩阵
 - `worker_threads` 已接入 runtime 启动流程并具备快速失败校验
+- TLS 双轨监听能力已接入，证书/私钥 fail-fast 校验与 HTTPS 运行时测试通过
 - 夜间 benchmark 收集
 - checksum 生成与校验
 - 基于版本标签的 GitHub Release 自动发布
 
 在做更强生产声明前仍需补齐：
 
+- 本地热重载控制路径（原子切换与失败回滚语义）
+- 公网 API 可靠性/容量门禁与稳定 SLO 报告
 - 更强的逐产物签名策略
 - 一次性环境中的原生 Linux 安装自动化
 - 一次性环境中的升级与回滚验证

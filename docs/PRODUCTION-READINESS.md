@@ -2,7 +2,7 @@
 
 ## English
 
-Report date: April 2, 2026
+Report date: April 7, 2026
 
 Project: `Rivulet Gateway / 溪流网关`
 
@@ -20,7 +20,14 @@ Why:
 - core reverse proxy path exists and is tested
 - packaging and CI/CD are now repository-owned
 - conservative keepalive reuse exists for safe response boundaries
-- but the protocol surface and runtime model are still narrow
+- dual-track TLS foundation is now available and test-gated
+- but hot reload, reliability SLO gates, and disposable-environment lifecycle validation are still not closed
+
+### Current Gate Status (April 7, 2026)
+
+- `cargo fmt --all -- --check`: pass
+- `cargo test --workspace`: pass (including built-in TLS runtime path)
+- `scripts/check-script-standards.sh` (Git Bash): pass
 
 ### What Exists Today
 
@@ -41,7 +48,7 @@ Implemented layers:
 ### Current Hard Limits
 
 - HTTP/1.1 only
-- no TLS termination
+- built-in Rustls TLS termination is available through `listeners[].tls` with fail-fast cert/key loading and mismatch checks
 - no HTTP/2
 - no chunked request support
 - no chunked upstream response support
@@ -52,10 +59,18 @@ Implemented layers:
 
 ### Known Engineering Gaps
 
-1. `worker_threads` is now wired into Tokio runtime bootstrap, but runtime hot-reload and dynamic thread-model switching are not available.
+1. Runtime hot-reload control path (`SIGHUP` + loopback admin reload endpoint) is not available yet.
 2. Packaging validation now includes CI/release systemd lifecycle gates for Linux x86_64 and arm64, but disposable-VM installation and upgrade coverage is still missing.
 3. The benchmark harness is intentionally conservative and local; it is not a substitute for server-grade load testing on Linux.
-4. Release checksums, keyless manifest signing, SBOM export, and provenance attestations now exist, but stronger per-asset signing policy and trust publication still need refinement.
+4. Public API reliability/capacity gates and stable SLO reporting are not fully automated yet.
+5. Release checksums, keyless manifest signing, SBOM export, and provenance attestations now exist, but stronger per-asset signing policy and trust publication still need refinement.
+
+### G2 Prep (Locked Semantics)
+
+- reload triggers: Linux `SIGHUP` and loopback-only `POST /__admin/api/reload`
+- apply mode: validate-first and atomic swap; keep old config serving on validation failure
+- v1 boundary: listener address/port changes are not hot-swappable and require restart
+- observability contract: expose `config_version`, `reload_result`, `tls_enabled`, `tls_listener`
 
 ### Validation Completed
 
@@ -150,16 +165,15 @@ Not recommended yet:
 
 ### Next Bottlenecks To Address
 
-1. Linux real-host benchmark and disposable-environment install/upgrade validation
-2. downstream keepalive lifecycle improvements beyond conservative sequential mode
-3. chunked transfer support or explicit non-support enforcement across all edges
-4. TLS and certificate lifecycle design
-5. runtime configurability and operations plane
-6. signed release process and public support policy
+1. local hot-reload control path with atomic config swap and explicit rollback semantics
+2. public API reliability and capacity gates for Linux x86_64 + arm64 with stable SLO thresholds
+3. Linux real-host benchmark and disposable-environment install/upgrade validation
+4. stronger per-asset detached signature policy and trust publication
+5. runtime configurability and operations plane maturity
 
 ## 中文
 
-报告日期：2026 年 4 月 2 日
+报告日期：2026 年 4 月 7 日
 
 项目：`Rivulet Gateway / 溪流网关`
 
@@ -177,7 +191,14 @@ Not recommended yet:
 - 核心反向代理链路已经存在并且有测试覆盖
 - 打包和 CI/CD 已经内建到仓库
 - 对安全响应边界已有保守的 keepalive 复用
-- 但协议面和运行时模型仍然偏窄
+- TLS 双轨基础能力已经具备并纳入测试门禁
+- 但热重载、可靠性 SLO 门禁和一次性环境生命周期验证还未收口
+
+### 当前门禁状态（2026 年 4 月 7 日）
+
+- `cargo fmt --all -- --check`：通过
+- `cargo test --workspace`：通过（含内建 TLS 运行时链路）
+- `scripts/check-script-standards.sh`（Git Bash）：通过
 
 ### 当前已具备能力
 
@@ -198,7 +219,7 @@ Not recommended yet:
 ### 当前硬边界
 
 - 仅支持 HTTP/1.1
-- 没有 TLS termination
+- 已支持通过 `listeners[].tls` 启用内建 Rustls TLS termination，并在证书/私钥加载失败或不匹配时快速失败
 - 没有 HTTP/2
 - 不支持 chunked request
 - 不支持 chunked upstream response
@@ -209,10 +230,18 @@ Not recommended yet:
 
 ### 已知工程缺口
 
-1. `worker_threads` 已接入 Tokio runtime 启动流程，但运行时热更新和动态线程模型切换能力仍未提供。
+1. 运行时热重载控制路径（`SIGHUP` + loopback 管理端点）还未落地。
 2. 打包验证已覆盖 CI/release 中 Linux x86_64 与 arm64 的 systemd 生命周期门禁，但一次性 VM 环境中的安装与升级覆盖仍然缺失。
 3. benchmark 工具当前故意保持保守且只跑本地，不可替代 Linux 服务器级负载测试。
-4. 发布 checksum、keyless 清单签名、SBOM 与 provenance 已接入，但按单个产物逐一签名和更强信任链发布仍需完善。
+4. 公网 API 可靠性/容量门禁与稳定 SLO 报告还未完全自动化。
+5. 发布 checksum、keyless 清单签名、SBOM 与 provenance 已接入，但按单个产物逐一签名和更强信任链发布仍需完善。
+
+### G2 预备（已锁定语义）
+
+- 重载触发：Linux `SIGHUP` 与仅 loopback 可访问的 `POST /__admin/api/reload`
+- 生效模式：先完整校验再原子切换；校验失败时保持旧配置继续服务
+- V1 边界：监听地址/端口变更不支持热切换，需重启生效
+- 可观测契约：输出 `config_version`、`reload_result`、`tls_enabled`、`tls_listener`
 
 ### 已完成验证
 
@@ -307,9 +336,8 @@ Not recommended yet:
 
 ### 下一批瓶颈
 
-1. Linux 真实主机 benchmark 与一次性环境安装/升级验证
-2. 下游 keepalive 生命周期继续增强（超出当前保守顺序模式）
-3. 对 chunked transfer 的支持，或更彻底的显式非支持策略
-4. TLS 与证书生命周期设计
-5. 运行时可配置性与运维平面
-6. 签名发布流程与公开支持策略
+1. 本地热重载控制路径（原子配置切换 + 失败回滚语义）
+2. Linux x86_64 + arm64 公网 API 可靠性/容量门禁与稳定 SLO 阈值
+3. Linux 真实主机 benchmark 与一次性环境安装/升级验证
+4. 更强的逐产物 detached 签名策略与信任链公开
+5. 运行时可配置性与运维平面成熟度
