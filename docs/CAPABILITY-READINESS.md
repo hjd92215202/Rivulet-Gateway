@@ -10,6 +10,7 @@ This document maps the requested gateway capabilities to the current repository 
 - Route aggregation: basic capability is already available now through listener + host + path prefix + method matching into upstream routing
 - Rate limiting and public-page protection: first conservative cut is available now through route-level in-memory fixed-window limiting keyed by client IP
 - Shared-access isolation: conservative capability is available now through route-level share grants that resolve query tokens into stable `share_id` and `scope`, enforce optional `resource_prefixes` boundaries, and inject `X-Rivulet-Share-Id` / `X-Rivulet-Share-Scope` upstream
+- Downstream lifecycle: conservative keepalive sequential-request handling is available now with configurable idle timeout and per-connection max request cap
 
 ### Not complete yet
 
@@ -42,6 +43,7 @@ The current priority remains: keep the kernel narrow, correct, observable, and o
 - 路由聚合：基础能力现在就可用，已经支持 listener + host + path prefix + method 到 upstream 的路由聚合
 - 限流与公开页面保护：现在已经具备第一版保守能力，可在路由级按客户端 IP 启用内存固定窗口限流
 - 分享访问隔离：现在已经具备保守可用能力，可在路由级用分享授权把 query token 解析成稳定的 `share_id` 与 `scope`，按可选 `resource_prefixes` 约束访问路径，并以上游请求头 `X-Rivulet-Share-Id`、`X-Rivulet-Share-Scope` 传递给后端
+- 下游连接生命周期：现在已经具备保守可用能力，可在同连接顺序处理请求，并配置 keepalive 空闲超时和单连接最大请求数
 
 ### 还没完整具备
 

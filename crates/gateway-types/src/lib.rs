@@ -511,6 +511,10 @@ pub struct RuntimeSettings {
     pub graceful_shutdown: Duration,
     /// 读取下游请求头和请求体的超时。
     pub downstream_read_timeout: Duration,
+    /// downstream keepalive 场景下，等待下一条请求首字节的空闲超时。
+    pub downstream_keepalive_idle_timeout: Duration,
+    /// 同一条 downstream 连接允许顺序处理的最大请求数。
+    pub downstream_keepalive_max_requests: usize,
     /// 与上游建立 TCP 连接的超时。
     pub upstream_connect_timeout: Duration,
     /// 读取上游响应的超时。
@@ -541,6 +545,8 @@ impl Default for RuntimeSettings {
             worker_threads: 4,
             graceful_shutdown: Duration::from_secs(30),
             downstream_read_timeout: Duration::from_secs(5),
+            downstream_keepalive_idle_timeout: Duration::from_secs(5),
+            downstream_keepalive_max_requests: 100,
             upstream_connect_timeout: Duration::from_secs(3),
             upstream_read_timeout: Duration::from_secs(5),
             upstream_retry_attempts: 2,
@@ -594,6 +600,8 @@ mod tests {
         let settings = RuntimeSettings::default();
         assert!(settings.upstream_retry_attempts >= 1);
         assert!(settings.upstream_idle_pool_size >= 1);
+        assert!(settings.downstream_keepalive_idle_timeout >= Duration::from_millis(100));
+        assert!(settings.downstream_keepalive_max_requests >= 1);
         assert!(settings.max_upstream_status_line_bytes >= 256);
         assert!(settings.max_upstream_headers >= 1);
         assert!(settings.max_upstream_header_bytes >= 1024);

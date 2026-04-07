@@ -47,7 +47,7 @@ Current limits:
 
 - HTTP/1.1 only
 - admin UI is read-only and loopback-only in the first cut (`/__admin/`)
-- one request per connection
+- downstream keepalive supports sequential requests on one connection (non-pipelined)
 - `Content-Length` request bodies only
 - no chunked request support yet
 - no `Expect: 100-continue` support yet
@@ -134,7 +134,7 @@ Project policy docs:
 当前限制：
 
 - 仅支持 HTTP/1.1
-- 每个下游连接当前只处理一个请求
+- 下游 keepalive 当前支持同连接顺序请求（不支持 pipelining）
 - 请求体仅支持 `Content-Length`
 - 暂不支持 chunked request
 - 暂无 TLS

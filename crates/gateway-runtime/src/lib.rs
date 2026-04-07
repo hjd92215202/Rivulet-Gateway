@@ -10,7 +10,7 @@ use gateway_admin::{
 };
 use gateway_config::GatewayConfigFile;
 use gateway_observability::{AccessLogRecord, RuntimeStats, RuntimeStatsSnapshot, emit_access_log};
-use gateway_proxy::{ProxyService, status_code_for_error};
+use gateway_proxy::{ProxyService, is_graceful_downstream_close, status_code_for_error};
 use gateway_router::Router;
 use gateway_types::{GatewayError, RequestContext, ResponseContext, Result, Shared};
 use gateway_upstream::{UpstreamRegistry, probe_endpoint};
@@ -162,6 +162,10 @@ impl AdminOverviewProvider for RuntimeAdminOverviewProvider {
             runtime: AdminRuntime {
                 graceful_shutdown_secs: runtime.graceful_shutdown.as_secs(),
                 downstream_read_timeout_ms: runtime.downstream_read_timeout.as_millis(),
+                downstream_keepalive_idle_timeout_ms: runtime
+                    .downstream_keepalive_idle_timeout
+                    .as_millis(),
+                downstream_keepalive_max_requests: runtime.downstream_keepalive_max_requests,
                 upstream_connect_timeout_ms: runtime.upstream_connect_timeout.as_millis(),
                 upstream_read_timeout_ms: runtime.upstream_read_timeout.as_millis(),
                 upstream_retry_attempts: runtime.upstream_retry_attempts,
@@ -253,40 +257,63 @@ async fn listener_loop(
                 tokio::spawn(async move {
                     // 连接一进来就记录活动连接数和请求开始时间。
                     app.stats.record_connection_opened();
-                    app.stats.record_request_started();
-                    let started_at = Instant::now();
+                    let runtime = app.config.runtime_settings();
+                    let mut handled_requests = 0_usize;
 
-                    // 单个连接失败不应该把整个 listener 打崩，
-                    // 所以这里把错误就地转换成 HTTP 响应返回给客户端。
-                    match app.proxy.handle_connection(&listener_name, &mut stream, client_addr).await {
-                        Ok(completed) => {
-                            // 成功路径记录状态码、重试次数和 access log。
-                            app.stats.record_request_completed(completed.response.status_code);
-                            app.stats.record_retries(completed.retries);
-                            emit_access_log(&AccessLogRecord::success(
-                                &completed.request,
-                                &completed.response,
-                                started_at.elapsed().as_millis(),
-                                completed.retries,
-                            ));
+                    loop {
+                        // 限制单连接最大请求数，避免极端长连接占用资源过久。
+                        if handled_requests >= runtime.downstream_keepalive_max_requests {
+                            break;
                         }
-                        Err(error) => {
-                            // 失败路径同样要打点和输出 access log，避免观测黑洞。
-                            let status_code = status_code_for_error(&error.error);
-                            app.stats.record_request_completed(status_code);
-                            app.stats.record_retries(error.retries);
-                            emit_access_log(&AccessLogRecord::failure(
-                                listener_name.clone(),
-                                error.request.as_ref(),
-                                status_code,
-                                started_at.elapsed().as_millis(),
-                                error.retries,
-                                error.error.to_string(),
-                            ));
+                        let started_at = Instant::now();
 
-                            let response = gateway_proxy::error_response(&error.error);
-                            let _ = stream.write_all(&response).await;
-                            let _ = stream.flush().await;
+                        // 单个请求失败不应该把整个 listener 打崩，
+                        // 所以这里把错误就地转换成 HTTP 响应返回给客户端。
+                        match app
+                            .proxy
+                            .handle_connection(&listener_name, &mut stream, client_addr)
+                            .await
+                        {
+                            Ok(completed) => {
+                                handled_requests += 1;
+                                app.stats.record_request_started();
+                                app.stats.record_request_completed(completed.response.status_code);
+                                app.stats.record_retries(completed.retries);
+                                emit_access_log(&AccessLogRecord::success(
+                                    &completed.request,
+                                    &completed.response,
+                                    started_at.elapsed().as_millis(),
+                                    completed.retries,
+                                ));
+
+                                if completed.close_downstream {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                // keepalive 场景下，空闲超时和对端主动关闭属于正常连接生命周期。
+                                if is_graceful_downstream_close(&error.error) {
+                                    break;
+                                }
+
+                                app.stats.record_request_started();
+                                let status_code = status_code_for_error(&error.error);
+                                app.stats.record_request_completed(status_code);
+                                app.stats.record_retries(error.retries);
+                                emit_access_log(&AccessLogRecord::failure(
+                                    listener_name.clone(),
+                                    error.request.as_ref(),
+                                    status_code,
+                                    started_at.elapsed().as_millis(),
+                                    error.retries,
+                                    error.error.to_string(),
+                                ));
+
+                                let response = gateway_proxy::error_response(&error.error);
+                                let _ = stream.write_all(&response).await;
+                                let _ = stream.flush().await;
+                                break;
+                            }
                         }
                     }
 
@@ -725,6 +752,163 @@ mod tests {
         assert!(text.contains("\"routes\":["));
 
         server.await.expect("server task").expect("gateway ok");
+    }
+
+    #[tokio::test]
+    async fn run_until_supports_sequential_requests_on_same_connection() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            for (index, (path, body)) in [("/one", "one"), ("/two", "two")]
+                .into_iter()
+                .enumerate()
+            {
+                let mut request = Vec::new();
+                let mut temp = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut temp).await.expect("read backend request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&temp[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let text = String::from_utf8(request).expect("request utf-8");
+                assert!(text.starts_with(&format!("GET {} HTTP/1.1", path)));
+                let connection_header = if index == 0 { "keep-alive" } else { "close" };
+
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n{}",
+                            body.len(),
+                            connection_header,
+                            body
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write backend response");
+            }
+        });
+
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                downstream_keepalive_idle_timeout_ms: 800,
+                downstream_keepalive_max_requests: 4,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(350)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(40)).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", listener_port))
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /one HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write first request");
+        let first = read_http_response(&mut client).await;
+        let first_text = String::from_utf8(first).expect("first response utf-8");
+        assert!(first_text.starts_with("HTTP/1.1 200 OK"));
+        assert!(first_text.ends_with("one"));
+
+        client
+            .write_all(b"GET /two HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write second request");
+        let second = read_http_response(&mut client).await;
+        let second_text = String::from_utf8(second).expect("second response utf-8");
+        assert!(second_text.starts_with("HTTP/1.1 200 OK"));
+        assert!(second_text.ends_with("two"));
+
+        server.await.expect("server task").expect("gateway ok");
+    }
+
+    async fn read_http_response(stream: &mut TcpStream) -> Vec<u8> {
+        let mut response = Vec::new();
+        let mut temp = [0_u8; 1024];
+        let header_end = loop {
+            let read = stream.read(&mut temp).await.expect("read response");
+            assert!(read > 0, "connection closed before headers completed");
+            response.extend_from_slice(&temp[..read]);
+            if let Some(position) = response.windows(4).position(|window| window == b"\r\n\r\n") {
+                break position;
+            }
+        };
+
+        let header_text = String::from_utf8(response[..header_end].to_vec()).expect("header utf-8");
+        let content_length = header_text
+            .split("\r\n")
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        Some(
+                            value
+                                .trim()
+                                .parse::<usize>()
+                                .expect("content-length should parse"),
+                        )
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or(0);
+
+        let expected_total = header_end + 4 + content_length;
+        while response.len() < expected_total {
+            let read = stream.read(&mut temp).await.expect("read response body");
+            assert!(read > 0, "connection closed before response body completed");
+            response.extend_from_slice(&temp[..read]);
+        }
+
+        response.truncate(expected_total);
+        response
     }
 
     fn reserve_port() -> u16 {

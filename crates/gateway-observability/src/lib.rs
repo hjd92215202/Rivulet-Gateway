@@ -89,6 +89,8 @@ pub struct AccessLogRecord {
     pub method: Option<String>,
     pub host: Option<String>,
     pub path: Option<String>,
+    pub share_id: Option<String>,
+    pub share_scope: Option<String>,
     pub status_code: u16,
     pub upstream: Option<String>,
     pub duration_ms: u128,
@@ -109,6 +111,8 @@ impl AccessLogRecord {
             method: Some(request.method.to_string()),
             host: Some(request.host.clone()),
             path: Some(request.path.clone()),
+            share_id: request.share_id.clone(),
+            share_scope: request.share_scope.clone(),
             status_code: response.status_code,
             upstream: response.upstream.clone(),
             duration_ms,
@@ -131,6 +135,8 @@ impl AccessLogRecord {
             method: request.map(|value| value.method.to_string()),
             host: request.map(|value| value.host.clone()),
             path: request.map(|value| value.path.clone()),
+            share_id: request.and_then(|value| value.share_id.clone()),
+            share_scope: request.and_then(|value| value.share_scope.clone()),
             status_code,
             upstream: None,
             duration_ms,
@@ -148,6 +154,8 @@ impl AccessLogRecord {
                 "\"method\":{},",
                 "\"host\":{},",
                 "\"path\":{},",
+                "\"share_id\":{},",
+                "\"share_scope\":{},",
                 "\"status_code\":{},",
                 "\"upstream\":{},",
                 "\"duration_ms\":{},",
@@ -160,6 +168,8 @@ impl AccessLogRecord {
             json_string_or_null(self.method.as_deref()),
             json_string_or_null(self.host.as_deref()),
             json_string_or_null(self.path.as_deref()),
+            json_string_or_null(self.share_id.as_deref()),
+            json_string_or_null(self.share_scope.as_deref()),
             self.status_code,
             json_string_or_null(self.upstream.as_deref()),
             self.duration_ms,
@@ -239,6 +249,8 @@ mod tests {
         let mut request =
             RequestContext::new("edge", "example.test", "/v1/orders", HttpMethod::Post);
         request.request_id = Some("req-1".into());
+        request.share_id = Some("share-01".into());
+        request.share_scope = Some("preview".into());
         let mut response = ResponseContext::new(200);
         response.upstream = Some("127.0.0.1:9000".into());
 
@@ -246,6 +258,8 @@ mod tests {
 
         assert!(line.contains("\"listener\":\"edge\""));
         assert!(line.contains("\"request_id\":\"req-1\""));
+        assert!(line.contains("\"share_id\":\"share-01\""));
+        assert!(line.contains("\"share_scope\":\"preview\""));
         assert!(line.contains("\"status_code\":200"));
         assert!(line.contains("\"retries\":1"));
     }

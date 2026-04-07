@@ -130,6 +130,15 @@ impl GatewayConfigFile {
             graceful_shutdown: Duration::from_secs(self.runtime.graceful_shutdown_secs),
             // 下游读取超时在这里统一转成 Duration，避免业务层反复换算单位。
             downstream_read_timeout: Duration::from_millis(self.runtime.downstream_read_timeout_ms),
+            // keepalive 空闲等待窗口独立于请求读超时，避免两者语义混淆。
+            downstream_keepalive_idle_timeout: Duration::from_millis(
+                self.runtime.downstream_keepalive_idle_timeout_ms.max(100),
+            ),
+            // 同连接最大请求数至少保留 1，避免错误配置直接禁掉主链路。
+            downstream_keepalive_max_requests: self
+                .runtime
+                .downstream_keepalive_max_requests
+                .max(1),
             // 上游建连超时直接影响失败判定和重试节奏。
             upstream_connect_timeout: Duration::from_millis(
                 self.runtime.upstream_connect_timeout_ms,
@@ -168,6 +177,12 @@ pub struct RuntimeConfig {
     /// 下游读取超时，单位是毫秒。
     #[serde(default = "default_downstream_read_timeout_ms")]
     pub downstream_read_timeout_ms: u64,
+    /// downstream keepalive 场景下等待下一条请求首字节的空闲超时，单位毫秒。
+    #[serde(default = "default_downstream_keepalive_idle_timeout_ms")]
+    pub downstream_keepalive_idle_timeout_ms: u64,
+    /// 同一条 downstream 连接最多顺序处理多少个请求。
+    #[serde(default = "default_downstream_keepalive_max_requests")]
+    pub downstream_keepalive_max_requests: usize,
     /// 上游建连超时，单位是毫秒。
     #[serde(default = "default_upstream_connect_timeout_ms")]
     pub upstream_connect_timeout_ms: u64,
@@ -209,6 +224,8 @@ impl Default for RuntimeConfig {
             worker_threads: default_worker_threads(),
             graceful_shutdown_secs: default_graceful_shutdown_secs(),
             downstream_read_timeout_ms: default_downstream_read_timeout_ms(),
+            downstream_keepalive_idle_timeout_ms: default_downstream_keepalive_idle_timeout_ms(),
+            downstream_keepalive_max_requests: default_downstream_keepalive_max_requests(),
             upstream_connect_timeout_ms: default_upstream_connect_timeout_ms(),
             upstream_read_timeout_ms: default_upstream_read_timeout_ms(),
             upstream_retry_attempts: default_upstream_retry_attempts(),
@@ -740,6 +757,14 @@ fn default_downstream_read_timeout_ms() -> u64 {
     5_000
 }
 
+fn default_downstream_keepalive_idle_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_downstream_keepalive_max_requests() -> usize {
+    100
+}
+
 fn default_upstream_connect_timeout_ms() -> u64 {
     3_000
 }
@@ -1019,6 +1044,8 @@ upstream = "api"
         assert_eq!(loaded.runtime.worker_threads, 4);
         assert_eq!(loaded.runtime.upstream_retry_attempts, 2);
         assert_eq!(loaded.runtime.upstream_idle_pool_size, 1);
+        assert_eq!(loaded.runtime.downstream_keepalive_idle_timeout_ms, 5_000);
+        assert_eq!(loaded.runtime.downstream_keepalive_max_requests, 100);
         assert_eq!(loaded.runtime.max_upstream_status_line_bytes, 8 * 1024);
         assert_eq!(loaded.runtime.max_upstream_headers, 100);
         assert_eq!(loaded.runtime.max_upstream_header_bytes, 64 * 1024);

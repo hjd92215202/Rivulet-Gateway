@@ -41,6 +41,8 @@ pub struct CompletedRequest {
     pub response: ResponseContext,
     /// 本次请求实际发生的额外重试次数。
     pub retries: usize,
+    /// 响应回写完成后是否应该关闭当前 downstream 连接。
+    pub close_downstream: bool,
 }
 
 #[derive(Debug)]
@@ -241,6 +243,7 @@ impl ProxyService {
                     request: request_context,
                     response,
                     retries: 0,
+                    close_downstream: true,
                 });
             }
         }
@@ -389,6 +392,10 @@ impl ProxyService {
                         request: request_context,
                         response,
                         retries: attempt,
+                        close_downstream: request_connection_close(
+                            &request.version,
+                            &request.headers,
+                        ) || upstream_response.connection_close,
                     });
                 }
                 Err(error) => {
@@ -517,6 +524,8 @@ struct UpstreamResponse {
     status_code: u16,
     /// 只有响应边界明确且上游未声明关闭时，连接才允许回收到池里。
     reusable_connection: bool,
+    /// 上游是否显式要求关闭当前响应连接。
+    connection_close: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +538,8 @@ struct ValidatedUpstreamResponseHead {
     body_allowed: bool,
     /// 只有在上游没有声明关闭连接时，连接才有资格进入复用判定。
     reusable_connection: bool,
+    /// 上游响应是否显式带了 `Connection: close` 语义。
+    connection_close: bool,
 }
 
 async fn read_upstream_response(
@@ -657,6 +668,7 @@ async fn read_upstream_response(
         // 只有“边界明确且上游未要求关闭”时才允许池化。
         reusable_connection: response_head.reusable_connection
             && (response_head.content_length.is_some() || !response_head.body_allowed),
+        connection_close: response_head.connection_close,
     })
 }
 
@@ -743,6 +755,7 @@ fn validate_upstream_response_head(
         content_length,
         body_allowed: upstream_response_body_allowed(status_code, request_method),
         reusable_connection: !connection_close,
+        connection_close,
     })
 }
 
@@ -776,16 +789,34 @@ impl HttpRequest {
                     "request headers exceed maximum size".into(),
                 ));
             }
-            let read = timeout(read_timeout, stream.read(&mut temp))
+            let waiting_for_first_byte = buffer.is_empty();
+            let wait_timeout = if waiting_for_first_byte {
+                settings.downstream_keepalive_idle_timeout
+            } else {
+                read_timeout
+            };
+            let read = timeout(wait_timeout, stream.read(&mut temp))
                 .await
                 .map_err(|_| {
-                    GatewayError::Io(format!(
-                        "read downstream request timed out after {:?}",
-                        read_timeout
-                    ))
+                    if waiting_for_first_byte {
+                        GatewayError::Io(format!(
+                            "downstream keepalive idle timeout after {:?}",
+                            wait_timeout
+                        ))
+                    } else {
+                        GatewayError::Io(format!(
+                            "read downstream request timed out after {:?}",
+                            read_timeout
+                        ))
+                    }
                 })?
                 .map_err(|err| GatewayError::Io(format!("read downstream request: {}", err)))?;
             if read == 0 {
+                if waiting_for_first_byte {
+                    return Err(GatewayError::Io(
+                        "downstream connection closed by peer".into(),
+                    ));
+                }
                 return Err(GatewayError::Protocol(
                     "connection closed before request completed".into(),
                 ));
@@ -895,8 +926,7 @@ impl HttpRequest {
             body.extend_from_slice(&extra);
         } else if body.len() > content_length {
             return Err(GatewayError::Unsupported(
-                "persistent downstream requests beyond one request per connection are not supported in the first kernel cut"
-                    .into(),
+                "downstream request pipelining is not supported in the first kernel cut".into(),
             ));
         }
 
@@ -1135,6 +1165,24 @@ fn response_connection_close(version: &str, headers: &[(String, String)]) -> boo
     }
 }
 
+fn request_connection_close(version: &str, headers: &[(String, String)]) -> bool {
+    if version == "HTTP/1.0" {
+        !headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("connection")
+                && value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("keep-alive"))
+        })
+    } else {
+        headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("connection")
+                && value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("close"))
+        })
+    }
+}
+
 fn upstream_response_body_allowed(status_code: u16, request_method: HttpMethod) -> bool {
     // `HEAD` 响应、1xx、204、304 都没有语义 body；
     // 只要碰到这些状态，我们就按“无 body”边界处理响应。
@@ -1196,6 +1244,15 @@ pub fn status_code_for_error(error: &GatewayError) -> u16 {
     status_and_reason_for_error(error).0
 }
 
+pub fn is_graceful_downstream_close(error: &GatewayError) -> bool {
+    matches!(
+        error,
+        GatewayError::Io(message)
+            if message == "downstream connection closed by peer"
+                || message.starts_with("downstream keepalive idle timeout after ")
+    )
+}
+
 fn status_and_reason_for_error(error: &GatewayError) -> (u16, &'static str) {
     match error {
         GatewayError::RouteNotMatched => (404_u16, "Not Found"),
@@ -1246,6 +1303,8 @@ mod tests {
                 runtime: AdminRuntime {
                     graceful_shutdown_secs: 30,
                     downstream_read_timeout_ms: 5000,
+                    downstream_keepalive_idle_timeout_ms: 5000,
+                    downstream_keepalive_max_requests: 100,
                     upstream_connect_timeout_ms: 3000,
                     upstream_read_timeout_ms: 5000,
                     upstream_retry_attempts: 2,
@@ -3458,7 +3517,7 @@ mod tests {
         let outcome = server.await.expect("server task");
         match outcome {
             Err(GatewayError::Unsupported(message)) => {
-                assert!(message.contains("one request per connection"));
+                assert!(message.contains("pipelining"));
             }
             other => panic!("expected downstream pipelining rejection, got {:?}", other),
         }

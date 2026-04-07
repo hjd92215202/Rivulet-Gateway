@@ -2,6 +2,8 @@
 worker_threads = 4
 graceful_shutdown_secs = 30
 downstream_read_timeout_ms = 5000
+downstream_keepalive_idle_timeout_ms = 5000
+downstream_keepalive_max_requests = 100
 upstream_connect_timeout_ms = 3000
 upstream_read_timeout_ms = 5000
 upstream_retry_attempts = 2

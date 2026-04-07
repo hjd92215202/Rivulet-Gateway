@@ -44,7 +44,7 @@ Implemented layers:
 - no HTTP/2
 - no chunked request support
 - no chunked upstream response support
-- no downstream keepalive request multiplexing; current model is effectively one request per accepted downstream connection
+- no downstream request pipelining; current model supports only sequential keepalive requests on one connection
 - no real auth, rate limit, WAF, or policy engine yet
 - no hot reload or dynamic config plane yet
 - no signed release artifacts yet
@@ -146,7 +146,7 @@ Not recommended yet:
 ### Next Bottlenecks To Address
 
 1. Linux real-host benchmark and installation validation
-2. downstream keepalive lifecycle improvements
+2. downstream keepalive lifecycle improvements beyond conservative sequential mode
 3. chunked transfer support or explicit non-support enforcement across all edges
 4. TLS and certificate lifecycle design
 5. runtime configurability and operations plane
@@ -196,7 +196,7 @@ Not recommended yet:
 - 没有 HTTP/2
 - 不支持 chunked request
 - 不支持 chunked upstream response
-- 没有下游 keepalive 请求复用；当前模型本质上是一条接入连接只处理一个请求
+- 没有下游请求 pipelining；当前模型只支持同连接顺序 keepalive 请求
 - 还没有真正的认证、限流、WAF 或策略引擎
 - 还没有热更新或动态配置面
 - 还没有发布产物签名
@@ -298,7 +298,7 @@ Not recommended yet:
 ### 下一批瓶颈
 
 1. Linux 真实主机 benchmark 与安装验证
-2. 下游 keepalive 生命周期增强
+2. 下游 keepalive 生命周期继续增强（超出当前保守顺序模式）
 3. 对 chunked transfer 的支持，或更彻底的显式非支持策略
 4. TLS 与证书生命周期设计
 5. 运行时可配置性与运维平面
