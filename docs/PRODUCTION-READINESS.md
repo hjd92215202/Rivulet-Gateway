@@ -33,6 +33,7 @@ Implemented layers:
 - HTTP/1.1 request parsing
 - reverse proxy over raw TCP
 - conservative upstream keepalive reuse
+- explicit protocol-boundary rejection matrix for unsupported HTTP/1.1 paths
 - runtime listener loop and graceful drain
 - Windows and Linux packaging skeleton
 - GitHub Actions for CI, packaging, release, and nightly benchmark collection
@@ -51,7 +52,7 @@ Implemented layers:
 
 ### Known Engineering Gaps
 
-1. `worker_threads` is still a config field, but it is not yet wired into a custom Tokio runtime builder.
+1. `worker_threads` is now wired into Tokio runtime bootstrap, but runtime hot-reload and dynamic thread-model switching are not available.
 2. Packaging validation now includes CI/release systemd lifecycle gates for Linux x86_64 and arm64, but disposable-VM installation and upgrade coverage is still missing.
 3. The benchmark harness is intentionally conservative and local; it is not a substitute for server-grade load testing on Linux.
 4. Release checksums, keyless manifest signing, SBOM export, and provenance attestations now exist, but stronger per-asset signing policy and trust publication still need refinement.
@@ -62,6 +63,7 @@ Repository validation:
 
 - workspace tests
 - protocol boundary tests
+- explicit `501` rejection coverage for unsupported transfer-encoding paths
 - keepalive reuse tests
 - Windows package build and smoke validation
 - Linux package structure validation designed into CI
@@ -188,6 +190,7 @@ Not recommended yet:
 - HTTP/1.1 请求解析
 - 基于原始 TCP 的反向代理
 - 保守的上游 keepalive 复用
+- 对不支持 HTTP/1.1 路径的显式协议边界拒绝矩阵
 - 监听运行时与优雅 drain
 - Windows 与 Linux 打包骨架
 - 用于 CI、打包、发布和夜间 benchmark 收集的 GitHub Actions
@@ -206,7 +209,7 @@ Not recommended yet:
 
 ### 已知工程缺口
 
-1. `worker_threads` 仍只是配置字段，还没有接入自定义 Tokio runtime builder。
+1. `worker_threads` 已接入 Tokio runtime 启动流程，但运行时热更新和动态线程模型切换能力仍未提供。
 2. 打包验证已覆盖 CI/release 中 Linux x86_64 与 arm64 的 systemd 生命周期门禁，但一次性 VM 环境中的安装与升级覆盖仍然缺失。
 3. benchmark 工具当前故意保持保守且只跑本地，不可替代 Linux 服务器级负载测试。
 4. 发布 checksum、keyless 清单签名、SBOM 与 provenance 已接入，但按单个产物逐一签名和更强信任链发布仍需完善。
@@ -217,6 +220,7 @@ Not recommended yet:
 
 - workspace tests
 - 协议边界测试
+- 针对不支持 transfer-encoding 路径的显式 `501` 拒绝测试
 - keepalive 复用测试
 - Windows 打包构建与 smoke 验证
 - Linux 包结构验证已接入 CI

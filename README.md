@@ -49,10 +49,11 @@ Current limits:
 - admin UI is read-only and loopback-only in the first cut (`/__admin/`)
 - downstream keepalive supports sequential requests on one connection (non-pipelined)
 - `Content-Length` request bodies only
-- no chunked request support yet
+- `Transfer-Encoding` request paths (including chunked and `Transfer-Encoding + Content-Length`) are explicitly rejected with `501`
+- upstream `Transfer-Encoding` response paths are explicitly rejected with `501`
 - no `Expect: 100-continue` support yet
 - no TLS yet
-- `worker_threads` config is not yet wired into a custom Tokio runtime
+- `worker_threads` is wired into Tokio multi-thread runtime bootstrap, and `worker_threads = 0` fails fast at startup
 - Linux package and RPM flow are scaffolded, but native target build hosts are still preferred
 
 Run:
@@ -136,9 +137,11 @@ Project policy docs:
 - 仅支持 HTTP/1.1
 - 下游 keepalive 当前支持同连接顺序请求（不支持 pipelining）
 - 请求体仅支持 `Content-Length`
-- 暂不支持 chunked request
+- `Transfer-Encoding` 请求路径（含 chunked 与 `Transfer-Encoding + Content-Length` 组合）会被显式拒绝为 `501`
+- 上游 `Transfer-Encoding` 响应路径会被显式拒绝为 `501`
+- 暂不支持 `Expect: 100-continue`
 - 暂无 TLS
-- `worker_threads` 配置项尚未接入自定义 Tokio runtime
+- `worker_threads` 已接入 Tokio 多线程 runtime 启动流程，且 `worker_threads = 0` 会在启动期快速失败
 - Linux 安装包和 RPM 流程已具备骨架，但仍更推荐在原生目标平台构建
 
 运行方式：

@@ -136,6 +136,8 @@ Implemented today:
 - Linux arm64 rpm
 - CI packaging and validation
 - CI/release Linux x86_64 + arm64 systemd lifecycle gates
+- explicit protocol rejection matrix for unsupported transfer-encoding paths
+- `worker_threads` wired into runtime bootstrap with fail-fast validation
 - nightly benchmark collection
 - checksum generation and verification
 - GitHub Release automation by version tag
@@ -282,6 +284,8 @@ Still required before stronger production claims:
 - Linux arm64 rpm
 - CI 打包与验证
 - CI/release 中 Linux x86_64 + arm64 的 systemd 生命周期门禁
+- 对不支持 transfer-encoding 路径的显式协议拒绝矩阵
+- `worker_threads` 已接入 runtime 启动流程并具备快速失败校验
 - 夜间 benchmark 收集
 - checksum 生成与校验
 - 基于版本标签的 GitHub Release 自动发布

@@ -11,6 +11,8 @@ This document maps the requested gateway capabilities to the current repository 
 - Rate limiting and public-page protection: first conservative cut is available now through route-level in-memory fixed-window limiting keyed by client IP
 - Shared-access isolation: conservative capability is available now through route-level share grants that resolve query tokens into stable `share_id` and `scope`, enforce optional `resource_prefixes` boundaries, and inject `X-Rivulet-Share-Id` / `X-Rivulet-Share-Scope` upstream
 - Downstream lifecycle: conservative keepalive sequential-request handling is available now with configurable idle timeout and per-connection max request cap
+- Protocol boundary rejection: unsupported HTTP/1.1 paths (`Transfer-Encoding`, `Transfer-Encoding + Content-Length`, `Expect: 100-continue`, pipelining, upstream transfer-encoding response) are now explicitly rejected with stable `501` behavior
+- Runtime thread model: `worker_threads` now drives Tokio multi-thread runtime bootstrap, and invalid zero value fails fast during config validation/startup
 
 ### Not complete yet
 
@@ -30,6 +32,8 @@ This document maps the requested gateway capabilities to the current repository 
 - no dynamic share grant storage or revocation source yet
 - no distributed rate-limit counter store yet
 - no advanced public-route abuse heuristics yet
+- no TLS termination yet
+- no HTTP/2 yet
 
 The current priority remains: keep the kernel narrow, correct, observable, and operable before widening the policy surface.
 
@@ -44,6 +48,8 @@ The current priority remains: keep the kernel narrow, correct, observable, and o
 - 限流与公开页面保护：现在已经具备第一版保守能力，可在路由级按客户端 IP 启用内存固定窗口限流
 - 分享访问隔离：现在已经具备保守可用能力，可在路由级用分享授权把 query token 解析成稳定的 `share_id` 与 `scope`，按可选 `resource_prefixes` 约束访问路径，并以上游请求头 `X-Rivulet-Share-Id`、`X-Rivulet-Share-Scope` 传递给后端
 - 下游连接生命周期：现在已经具备保守可用能力，可在同连接顺序处理请求，并配置 keepalive 空闲超时和单连接最大请求数
+- 协议边界拒绝矩阵：对暂不支持的 HTTP/1.1 路径（`Transfer-Encoding`、`Transfer-Encoding + Content-Length`、`Expect: 100-continue`、pipelining、上游 transfer-encoding 响应）已收敛为稳定 `501` 显式拒绝
+- 运行时线程模型：`worker_threads` 已驱动 Tokio 多线程 runtime 启动，非法零值会在配置校验/启动阶段快速失败
 
 ### 还没完整具备
 
@@ -63,5 +69,7 @@ The current priority remains: keep the kernel narrow, correct, observable, and o
 - 还没有动态分享授权存储或撤销来源
 - 还没有分布式限流计数存储
 - 还没有更高级的公开页面滥用防护启发式
+- 还没有 TLS termination
+- 还没有 HTTP/2
 
 当前优先级仍然是：在扩大策略面之前，先把内核做窄、做稳、做可观测、做可运维。
