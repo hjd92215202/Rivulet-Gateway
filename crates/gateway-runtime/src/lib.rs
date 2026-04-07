@@ -548,6 +548,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_until_returns_501_for_transfer_encoding_request() {
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(250)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(40)).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", listener_port))
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 501 Not Implemented"));
+
+        server.await.expect("server task").expect("gateway ok");
+    }
+
+    #[tokio::test]
+    async fn run_until_returns_501_for_transfer_encoding_with_content_length_request() {
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(250)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(40)).await;
+
+        let mut client = TcpStream::connect(("127.0.0.1", listener_port))
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\nhello",
+            )
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 501 Not Implemented"));
+
+        server.await.expect("server task").expect("gateway ok");
+    }
+
+    #[tokio::test]
     async fn handle_updates_runtime_stats_snapshot() {
         let config = GatewayConfigFile {
             runtime: RuntimeConfig::default(),

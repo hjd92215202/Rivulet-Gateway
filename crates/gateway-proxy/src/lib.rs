@@ -740,14 +740,21 @@ fn validate_upstream_response_head(
         headers.push((name.to_string(), value.trim().to_string()));
     }
 
+    let content_length = parse_optional_content_length(&headers)?;
+
     // 第一版显式拒绝 `Transfer-Encoding`，避免在尚未实现 chunked 解码前误读边界。
+    // 同时拒绝 `Transfer-Encoding + Content-Length` 组合，减少上下游边界解释分歧。
+    if header_has_transfer_encoding(&headers) && content_length.is_some() {
+        return Err(GatewayError::Unsupported(
+            "upstream transfer-encoding with content-length is not supported in the first kernel cut"
+                .into(),
+        ));
+    }
     if header_has_transfer_encoding(&headers) {
         return Err(GatewayError::Unsupported(
             "upstream transfer-encoding is not supported in the first kernel cut".into(),
         ));
     }
-
-    let content_length = parse_optional_content_length(&headers)?;
     let connection_close = response_connection_close(version, &headers);
 
     Ok(ValidatedUpstreamResponseHead {
@@ -898,6 +905,13 @@ impl HttpRequest {
             ));
         }
 
+        // 对 `Transfer-Encoding` 相关路径统一显式拒绝，避免把 chunked 语义误当固定长度。
+        if header_has_transfer_encoding(&headers) && header_has_content_length(&headers) {
+            return Err(GatewayError::Unsupported(
+                "transfer-encoding with content-length is not supported in the first kernel cut"
+                    .into(),
+            ));
+        }
         if header_has_transfer_encoding(&headers) {
             return Err(GatewayError::Unsupported(
                 "transfer-encoding is not supported in the first kernel cut".into(),
@@ -1134,6 +1148,12 @@ fn header_has_transfer_encoding(headers: &[(String, String)]) -> bool {
     headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
+}
+
+fn header_has_content_length(headers: &[(String, String)]) -> bool {
+    headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-length"))
 }
 
 fn header_has_expect_100_continue(headers: &[(String, String)]) -> bool {
@@ -2447,6 +2467,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstream_transfer_encoding_response_does_not_reuse_connection() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let backend_accept_count = Arc::clone(&accept_count);
+
+        let backend_task = tokio::spawn(async move {
+            for index in 0..2 {
+                let (mut stream, _) = backend.accept().await.expect("accept backend");
+                backend_accept_count.fetch_add(1, Ordering::SeqCst);
+
+                let _request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                    .await
+                    .expect("read backend request");
+
+                if index == 0 {
+                    // 第一条响应故意返回 Transfer-Encoding，验证网关拒绝后不会把连接放回池里。
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+                        )
+                        .await
+                        .expect("write first backend response");
+                } else {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await
+                        .expect("write second backend response");
+                }
+            }
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = Arc::new(ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        ));
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let mut outcomes = Vec::new();
+            for _ in 0..2 {
+                let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+                let service = Arc::clone(&service);
+                outcomes.push(
+                    service
+                        .handle_connection("edge", &mut downstream, client_addr)
+                        .await,
+                );
+            }
+            outcomes
+        });
+
+        let mut first_client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect first client");
+        first_client
+            .write_all(b"GET /one HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write first request");
+
+        let mut second_client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect second client");
+        second_client
+            .write_all(b"GET /two HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write second request");
+
+        let outcomes = server.await.expect("gateway task");
+        backend_task.await.expect("backend task");
+
+        match &outcomes[0] {
+            Err(ProxyConnectionError {
+                error: GatewayError::Unsupported(message),
+                ..
+            }) => {
+                assert!(message.contains("transfer-encoding"));
+            }
+            other => panic!(
+                "expected first request to fail on upstream transfer-encoding, got {:?}",
+                other
+            ),
+        }
+        assert!(outcomes[1].is_ok());
+        assert_eq!(accept_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
     async fn returns_timeout_when_upstream_response_stalls() {
         let backend = TcpListener::bind("127.0.0.1:0")
             .await
@@ -3491,6 +3641,67 @@ mod tests {
                 assert!(message.contains("100-continue"));
             }
             other => panic!("expected expect header rejection, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_transfer_encoding_request() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Unsupported(message)) => {
+                assert!(message.contains("transfer-encoding"));
+            }
+            other => panic!("expected transfer-encoding rejection, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_transfer_encoding_with_content_length_request() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept connection");
+            HttpRequest::read_from(&mut stream, &RuntimeSettings::default()).await
+        });
+
+        let mut client = TcpStream::connect(addr).await.expect("connect listener");
+        client
+            .write_all(
+                b"POST /upload HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\nhello",
+            )
+            .await
+            .expect("write request");
+
+        let outcome = server.await.expect("server task");
+        match outcome {
+            Err(GatewayError::Unsupported(message)) => {
+                assert!(message.contains("with content-length"));
+            }
+            other => panic!(
+                "expected transfer-encoding with content-length rejection, got {:?}",
+                other
+            ),
         }
     }
 
