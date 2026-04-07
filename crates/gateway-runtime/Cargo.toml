@@ -13,3 +13,9 @@ gateway-router = { path = "../gateway-router" }
 gateway-types = { path = "../gateway-types" }
 gateway-upstream = { path = "../gateway-upstream" }
 tokio = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+
+[dev-dependencies]
+rcgen = "0.13.2"

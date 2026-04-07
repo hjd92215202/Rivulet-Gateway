@@ -78,6 +78,7 @@ impl GatewayConfigFile {
                     listener.name
                 )));
             }
+            validate_listener_tls(listener)?;
         }
 
         for upstream in &self.upstreams {
@@ -256,6 +257,28 @@ pub struct ListenerConfig {
     pub address: String,
     /// listener 使用的协议类型。
     pub protocol: ProtocolConfig,
+    /// 可选的内建 TLS 配置；默认保持无 TLS。
+    #[serde(default)]
+    pub tls: Option<ListenerTlsConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ListenerTlsConfig {
+    /// 证书链文件路径（PEM）。
+    pub cert_file: String,
+    /// 私钥文件路径（PEM）。
+    pub key_file: String,
+    /// TLS 最低版本，默认 `tls1_2`。
+    #[serde(default)]
+    pub min_version: TlsMinVersionConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsMinVersionConfig {
+    #[default]
+    Tls1_2,
+    Tls1_3,
 }
 
 /// 配置层协议枚举和 `gateway-types::Protocol` 分开定义，
@@ -695,6 +718,34 @@ fn validate_route_rate_limit(rate_limit: &RouteRateLimitConfig, scope: &str) -> 
     }
 }
 
+fn validate_listener_tls(listener: &ListenerConfig) -> Result<()> {
+    let Some(tls) = listener.tls.as_ref() else {
+        return Ok(());
+    };
+
+    if listener.protocol != ProtocolConfig::Http1 {
+        return Err(GatewayError::InvalidConfig(format!(
+            "listener {} enables tls but only http1 is supported in this cut",
+            listener.name
+        )));
+    }
+
+    if tls.cert_file.trim().is_empty() {
+        return Err(GatewayError::InvalidConfig(format!(
+            "listener {} tls cert_file must not be empty",
+            listener.name
+        )));
+    }
+    if tls.key_file.trim().is_empty() {
+        return Err(GatewayError::InvalidConfig(format!(
+            "listener {} tls key_file must not be empty",
+            listener.name
+        )));
+    }
+
+    Ok(())
+}
+
 fn validate_route_share(share: &RouteShareConfig, scope: &str) -> Result<()> {
     if share.query_token_name.trim().is_empty() {
         return Err(GatewayError::InvalidConfig(format!(
@@ -852,6 +903,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:8080".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -930,6 +982,55 @@ mod tests {
         let error = config.validate().expect_err("config should be invalid");
         match error {
             GatewayError::InvalidConfig(message) => assert!(message.contains("retry_attempts")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_listener_tls_without_cert_file() {
+        let mut config = valid_config();
+        config.listeners[0].tls = Some(ListenerTlsConfig {
+            cert_file: "".into(),
+            key_file: "/tmp/rivulet.key".into(),
+            min_version: TlsMinVersionConfig::Tls1_2,
+        });
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("cert_file")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_listener_tls_without_key_file() {
+        let mut config = valid_config();
+        config.listeners[0].tls = Some(ListenerTlsConfig {
+            cert_file: "/tmp/rivulet.crt".into(),
+            key_file: " ".into(),
+            min_version: TlsMinVersionConfig::Tls1_2,
+        });
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("key_file")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_listener_tls_on_http2() {
+        let mut config = valid_config();
+        config.listeners[0].protocol = ProtocolConfig::Http2;
+        config.listeners[0].tls = Some(ListenerTlsConfig {
+            cert_file: "/tmp/rivulet.crt".into(),
+            key_file: "/tmp/rivulet.key".into(),
+            min_version: TlsMinVersionConfig::Tls1_2,
+        });
+
+        let error = config.validate().expect_err("config should be invalid");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("http1")),
             other => panic!("unexpected error: {:?}", other),
         }
     }
@@ -1291,5 +1392,104 @@ resource_prefixes = ["/share/view"]
             loaded.routes[0].share.grants[0].resource_prefixes,
             vec!["/share/view".to_string()]
         );
+    }
+
+    #[test]
+    fn load_from_file_reads_listener_tls_config() {
+        let file_name = format!(
+            "gateway-config-listener-tls-test-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+
+        fs::write(
+            &path,
+            r#"
+[[listeners]]
+name = "edge"
+address = "127.0.0.1:8443"
+protocol = "http1"
+
+[listeners.tls]
+cert_file = "/etc/rivulet/tls/server.crt"
+key_file = "/etc/rivulet/tls/server.key"
+
+[[upstreams]]
+name = "api"
+load_balance = "round_robin"
+
+[[upstreams.endpoints]]
+address = "127.0.0.1:9000"
+
+[[routes]]
+name = "default"
+listener = "edge"
+upstream = "api"
+"#,
+        )
+        .expect("write config file");
+
+        let loaded = GatewayConfigFile::load_from_file(&path).expect("config should load");
+        let _ = fs::remove_file(&path);
+
+        let tls = loaded.listeners[0]
+            .tls
+            .as_ref()
+            .expect("listener tls should exist");
+        assert_eq!(tls.cert_file, "/etc/rivulet/tls/server.crt");
+        assert_eq!(tls.key_file, "/etc/rivulet/tls/server.key");
+        assert_eq!(tls.min_version, TlsMinVersionConfig::Tls1_2);
+    }
+
+    #[test]
+    fn load_from_file_reads_listener_tls_min_version_tls13() {
+        let file_name = format!(
+            "gateway-config-listener-tls13-test-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+
+        fs::write(
+            &path,
+            r#"
+[[listeners]]
+name = "edge"
+address = "127.0.0.1:8443"
+protocol = "http1"
+
+[listeners.tls]
+cert_file = "/etc/rivulet/tls/server.crt"
+key_file = "/etc/rivulet/tls/server.key"
+min_version = "tls1_3"
+
+[[upstreams]]
+name = "api"
+load_balance = "round_robin"
+
+[[upstreams.endpoints]]
+address = "127.0.0.1:9000"
+
+[[routes]]
+name = "default"
+listener = "edge"
+upstream = "api"
+"#,
+        )
+        .expect("write config file");
+
+        let loaded = GatewayConfigFile::load_from_file(&path).expect("config should load");
+        let _ = fs::remove_file(&path);
+
+        let tls = loaded.listeners[0]
+            .tls
+            .as_ref()
+            .expect("listener tls should exist");
+        assert_eq!(tls.min_version, TlsMinVersionConfig::Tls1_3);
     }
 }

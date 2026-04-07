@@ -87,6 +87,7 @@ mod tests {
                 name: "edge".into(),
                 address: "0.0.0.0:8080".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![
                 RouteConfig {

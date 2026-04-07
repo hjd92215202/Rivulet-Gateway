@@ -274,6 +274,7 @@ fn spawn_gateway(
             name: "bench".into(),
             address: format!("127.0.0.1:{gateway_port}"),
             protocol: ProtocolConfig::Http1,
+            tls: None,
         }],
         routes: vec![RouteConfig {
             name: "bench-route".into(),

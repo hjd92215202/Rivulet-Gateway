@@ -1,6 +1,8 @@
 //! runtime 层负责把配置、代理和后台任务真正装配起来。
 //! 它不关心某次请求具体怎么转发，只关心“系统如何活起来并稳定运行”。
 
+use std::fs;
+use std::io::BufReader;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -8,15 +10,16 @@ use gateway_admin::{
     AdminListener, AdminOverview, AdminOverviewProvider, AdminRoute, AdminRuntime, AdminService,
     AdminStats, AdminSummary, AdminUpstream,
 };
-use gateway_config::GatewayConfigFile;
+use gateway_config::{GatewayConfigFile, ListenerTlsConfig, TlsMinVersionConfig};
 use gateway_observability::{AccessLogRecord, RuntimeStats, RuntimeStatsSnapshot, emit_access_log};
 use gateway_proxy::{ProxyService, is_graceful_downstream_close, status_code_for_error};
 use gateway_router::Router;
 use gateway_types::{GatewayError, RequestContext, ResponseContext, Result, Shared};
 use gateway_upstream::{UpstreamRegistry, probe_endpoint};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
+use tokio_rustls::TlsAcceptor;
 
 pub struct GatewayApp {
     /// 原始配置快照，供摘要输出和后台任务读取。
@@ -105,6 +108,11 @@ impl GatewayApp {
             let app = Arc::clone(&shared);
             let listener_name = listener.name.clone();
             let listener_address = listener.address.clone();
+            let tls_acceptor = listener
+                .tls
+                .as_ref()
+                .map(|tls| build_tls_acceptor(&listener_name, tls))
+                .transpose()?;
             let listener_shutdown = shutdown_rx.clone();
             handles.push(tokio::spawn(async move {
                 listener_loop(
@@ -112,6 +120,7 @@ impl GatewayApp {
                     tcp_listener,
                     listener_name,
                     listener_address,
+                    tls_acceptor,
                     listener_shutdown,
                 )
                 .await
@@ -233,91 +242,135 @@ pub struct GatewaySummary {
     pub worker_threads: usize,
 }
 
+fn build_tls_acceptor(listener_name: &str, tls: &ListenerTlsConfig) -> Result<TlsAcceptor> {
+    // TLS 证书读取放在启动阶段，任何加载失败都必须 fail-fast，避免进程带病上线。
+    let cert_file = fs::File::open(&tls.cert_file).map_err(|err| {
+        GatewayError::InvalidConfig(format!(
+            "listener {} tls cert_file {} open failed: {}",
+            listener_name, tls.cert_file, err
+        ))
+    })?;
+    let key_file = fs::File::open(&tls.key_file).map_err(|err| {
+        GatewayError::InvalidConfig(format!(
+            "listener {} tls key_file {} open failed: {}",
+            listener_name, tls.key_file, err
+        ))
+    })?;
+
+    let mut cert_reader = BufReader::new(cert_file);
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|err| {
+            GatewayError::InvalidConfig(format!(
+                "listener {} tls cert_file {} parse failed: {}",
+                listener_name, tls.cert_file, err
+            ))
+        })?;
+    if certs.is_empty() {
+        return Err(GatewayError::InvalidConfig(format!(
+            "listener {} tls cert_file {} does not contain certificates",
+            listener_name, tls.cert_file
+        )));
+    }
+
+    let mut key_reader = BufReader::new(key_file);
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|err| {
+            GatewayError::InvalidConfig(format!(
+                "listener {} tls key_file {} parse failed: {}",
+                listener_name, tls.key_file, err
+            ))
+        })?
+        .ok_or_else(|| {
+            GatewayError::InvalidConfig(format!(
+                "listener {} tls key_file {} does not contain a supported private key",
+                listener_name, tls.key_file
+            ))
+        })?;
+
+    let versions = match tls.min_version {
+        TlsMinVersionConfig::Tls1_2 => vec![&rustls::version::TLS13, &rustls::version::TLS12],
+        TlsMinVersionConfig::Tls1_3 => vec![&rustls::version::TLS13],
+    };
+    let server_config = rustls::ServerConfig::builder_with_protocol_versions(&versions)
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|err| {
+            GatewayError::InvalidConfig(format!(
+                "listener {} tls cert/key configuration is invalid: {}",
+                listener_name, err
+            ))
+        })?;
+
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
 async fn listener_loop(
     app: Arc<GatewayApp>,
     listener: TcpListener,
     listener_name: String,
     listener_address: String,
+    tls_acceptor: Option<TlsAcceptor>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
                 match changed {
-                    // 收到停止信号后不再 accept 新连接。
                     Ok(_) | Err(_) => break,
                 }
             }
             accepted = listener.accept() => {
-                // 每个连接都放到独立任务里，避免相互阻塞。
-                let (mut stream, client_addr) = accepted
+                let (stream, client_addr) = accepted
                     .map_err(|err| GatewayError::Io(format!("accept on {}: {}", listener_address, err)))?;
                 let app = Arc::clone(&app);
                 let listener_name = listener_name.clone();
+                let tls_acceptor = tls_acceptor.clone();
                 tokio::spawn(async move {
-                    // 连接一进来就记录活动连接数和请求开始时间。
                     app.stats.record_connection_opened();
-                    let runtime = app.config.runtime_settings();
-                    let mut handled_requests = 0_usize;
 
-                    loop {
-                        // 限制单连接最大请求数，避免极端长连接占用资源过久。
-                        if handled_requests >= runtime.downstream_keepalive_max_requests {
-                            break;
-                        }
-                        let started_at = Instant::now();
-
-                        // 单个请求失败不应该把整个 listener 打崩，
-                        // 所以这里把错误就地转换成 HTTP 响应返回给客户端。
-                        match app
-                            .proxy
-                            .handle_connection(&listener_name, &mut stream, client_addr)
-                            .await
-                        {
-                            Ok(completed) => {
-                                handled_requests += 1;
-                                app.stats.record_request_started();
-                                app.stats.record_request_completed(completed.response.status_code);
-                                app.stats.record_retries(completed.retries);
-                                emit_access_log(&AccessLogRecord::success(
-                                    &completed.request,
-                                    &completed.response,
-                                    started_at.elapsed().as_millis(),
-                                    completed.retries,
-                                ));
-
-                                if completed.close_downstream {
-                                    break;
+                    if let Some(tls_acceptor) = tls_acceptor {
+                        // TLS 终止只负责把连接解包为安全的明文流，后续请求处理语义与明文入口完全复用。
+                        match tls_acceptor.accept(stream).await {
+                            Ok(mut tls_stream) => {
+                                handle_client_stream(
+                                    app.clone(),
+                                    listener_name.clone(),
+                                    client_addr,
+                                    &mut tls_stream,
+                                )
+                                .await;
+                                // 最佳努力发送 TLS close_notify，尽量让对端拿到完整的优雅关闭信号。
+                                // 如果对端已经提前断开，这里只做可观测提示，不影响主请求结果。
+                                if let Err(err) = tls_stream.shutdown().await {
+                                    eprintln!(
+                                        "{{\"listener\":\"{}\",\"client\":\"{}\",\"event\":\"tls_close_notify_failed\",\"error\":\"{}\"}}",
+                                        listener_name, client_addr, err
+                                    );
                                 }
                             }
-                            Err(error) => {
-                                // keepalive 场景下，空闲超时和对端主动关闭属于正常连接生命周期。
-                                if is_graceful_downstream_close(&error.error) {
-                                    break;
-                                }
-
-                                app.stats.record_request_started();
-                                let status_code = status_code_for_error(&error.error);
-                                app.stats.record_request_completed(status_code);
-                                app.stats.record_retries(error.retries);
+                            Err(err) => {
                                 emit_access_log(&AccessLogRecord::failure(
                                     listener_name.clone(),
-                                    error.request.as_ref(),
-                                    status_code,
-                                    started_at.elapsed().as_millis(),
-                                    error.retries,
-                                    error.error.to_string(),
+                                    None,
+                                    400,
+                                    0,
+                                    0,
+                                    format!("tls handshake failed: {}", err),
                                 ));
-
-                                let response = gateway_proxy::error_response(&error.error);
-                                let _ = stream.write_all(&response).await;
-                                let _ = stream.flush().await;
-                                break;
                             }
                         }
+                    } else {
+                        let mut stream = stream;
+                        handle_client_stream(
+                            app.clone(),
+                            listener_name.clone(),
+                            client_addr,
+                            &mut stream,
+                        )
+                        .await;
                     }
 
-                    // 连接任务结束时统一归还活动连接计数。
                     app.stats.record_connection_closed();
                 });
             }
@@ -325,6 +378,76 @@ async fn listener_loop(
     }
 
     Ok(())
+}
+
+async fn handle_client_stream<S>(
+    app: Arc<GatewayApp>,
+    listener_name: String,
+    client_addr: std::net::SocketAddr,
+    stream: &mut S,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let runtime = app.config.runtime_settings();
+    let mut handled_requests = 0_usize;
+
+    loop {
+        // 限制单连接最大请求数，避免极端长连接占用资源过久。
+        if handled_requests >= runtime.downstream_keepalive_max_requests {
+            break;
+        }
+        let started_at = Instant::now();
+
+        // 单个请求失败不应该把整个 listener 打穿，
+        // 所以这里把错误就地转换成 HTTP 响应返回给客户端。
+        match app
+            .proxy
+            .handle_connection(&listener_name, stream, client_addr)
+            .await
+        {
+            Ok(completed) => {
+                handled_requests += 1;
+                app.stats.record_request_started();
+                app.stats
+                    .record_request_completed(completed.response.status_code);
+                app.stats.record_retries(completed.retries);
+                emit_access_log(&AccessLogRecord::success(
+                    &completed.request,
+                    &completed.response,
+                    started_at.elapsed().as_millis(),
+                    completed.retries,
+                ));
+
+                if completed.close_downstream {
+                    break;
+                }
+            }
+            Err(error) => {
+                // keepalive 场景下，空闲超时和对端主动关闭属于正常连接生命周期。
+                if is_graceful_downstream_close(&error.error) {
+                    break;
+                }
+
+                app.stats.record_request_started();
+                let status_code = status_code_for_error(&error.error);
+                app.stats.record_request_completed(status_code);
+                app.stats.record_retries(error.retries);
+                emit_access_log(&AccessLogRecord::failure(
+                    listener_name.clone(),
+                    error.request.as_ref(),
+                    status_code,
+                    started_at.elapsed().as_millis(),
+                    error.retries,
+                    error.error.to_string(),
+                ));
+
+                let response = gateway_proxy::error_response(&error.error);
+                let _ = stream.write_all(&response).await;
+                let _ = stream.flush().await;
+                break;
+            }
+        }
+    }
 }
 
 async fn health_check_loop(
@@ -378,12 +501,18 @@ async fn wait_for_connection_drain(app: Arc<GatewayApp>, timeout: Duration) {
 mod tests {
     use super::*;
     use gateway_config::{
-        EndpointConfig, ListenerConfig, LoadBalanceConfig, ProtocolConfig, RouteConfig,
-        RuntimeConfig, UpstreamConfig,
+        EndpointConfig, ListenerConfig, ListenerTlsConfig, LoadBalanceConfig, ProtocolConfig,
+        RouteConfig, RuntimeConfig, TlsMinVersionConfig, UpstreamConfig,
     };
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use rustls::pki_types::ServerName;
+    use rustls::{ClientConfig, RootCertStore};
+    use std::fs;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::{Duration, sleep, timeout};
+    use tokio_rustls::TlsConnector;
 
     #[tokio::test]
     async fn run_until_serves_proxy_traffic() {
@@ -425,6 +554,7 @@ mod tests {
                 name: "edge".into(),
                 address: format!("127.0.0.1:{listener_port}"),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -491,6 +621,7 @@ mod tests {
                 name: "edge".into(),
                 address: format!("127.0.0.1:{listener_port}"),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -556,6 +687,7 @@ mod tests {
                 name: "edge".into(),
                 address: format!("127.0.0.1:{listener_port}"),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -623,6 +755,7 @@ mod tests {
                 name: "edge".into(),
                 address: format!("127.0.0.1:{listener_port}"),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -689,6 +822,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:8080".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -761,6 +895,7 @@ mod tests {
                 name: "edge".into(),
                 address: format!("127.0.0.1:{listener_port}"),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -827,6 +962,7 @@ mod tests {
                 name: "edge".into(),
                 address: format!("127.0.0.1:{listener_port}"),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -942,6 +1078,7 @@ mod tests {
                 name: "edge".into(),
                 address: format!("127.0.0.1:{listener_port}"),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -1042,6 +1179,7 @@ mod tests {
                 name: "edge".into(),
                 address: format!("127.0.0.1:{listener_port}"),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -1101,7 +1239,246 @@ mod tests {
         server.await.expect("server task").expect("gateway ok");
     }
 
-    async fn read_http_response(stream: &mut TcpStream) -> Vec<u8> {
+    #[tokio::test]
+    async fn run_until_fails_fast_when_tls_cert_file_missing() {
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+                tls: Some(ListenerTlsConfig {
+                    cert_file: "/tmp/rivulet-missing-cert.pem".into(),
+                    key_file: "/tmp/rivulet-missing-key.pem".into(),
+                    min_version: TlsMinVersionConfig::Tls1_2,
+                }),
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let error = app
+            .run_until(async {
+                sleep(Duration::from_millis(5)).await;
+            })
+            .await
+            .expect_err("tls missing file should fail");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("cert_file")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_until_fails_fast_when_tls_cert_key_mismatch() {
+        let (cert_path, _, _) = write_test_tls_materials("tls-mismatch-cert");
+        let (_, key_path, _) = write_test_tls_materials("tls-mismatch-key");
+
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+                tls: Some(ListenerTlsConfig {
+                    cert_file: cert_path.to_string_lossy().to_string(),
+                    key_file: key_path.to_string_lossy().to_string(),
+                    min_version: TlsMinVersionConfig::Tls1_2,
+                }),
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: "127.0.0.1:9000".into(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let error = app
+            .run_until(async {
+                sleep(Duration::from_millis(5)).await;
+            })
+            .await
+            .expect_err("tls cert/key mismatch should fail");
+        match error {
+            GatewayError::InvalidConfig(message) => assert!(message.contains("cert/key")),
+            other => panic!("unexpected error: {:?}", other),
+        }
+
+        let _ = fs::remove_file(cert_path);
+        let _ = fs::remove_file(key_path);
+    }
+
+    #[tokio::test]
+    async fn run_until_serves_https_traffic_with_built_in_tls() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+        tokio::spawn(async move {
+            let (mut stream, _) = backend.accept().await.expect("accept backend");
+            let mut request = Vec::new();
+            let mut temp = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut temp).await.expect("read backend request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&temp[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("write backend response");
+        });
+
+        let (cert_path, key_path, cert_der) = write_test_tls_materials("tls-success");
+        let listener_port = reserve_port();
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig::default(),
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: format!("127.0.0.1:{listener_port}"),
+                protocol: ProtocolConfig::Http1,
+                tls: Some(ListenerTlsConfig {
+                    cert_file: cert_path.to_string_lossy().to_string(),
+                    key_file: key_path.to_string_lossy().to_string(),
+                    min_version: TlsMinVersionConfig::Tls1_2,
+                }),
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let app = GatewayApp::from_config(config);
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(250)).await;
+            })
+            .await
+        });
+        sleep(Duration::from_millis(40)).await;
+
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(cert_der))
+            .expect("add root cert");
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(client_config));
+
+        let tcp = TcpStream::connect(("127.0.0.1", listener_port))
+            .await
+            .expect("connect tls listener");
+        let server_name = ServerName::try_from("localhost").expect("server name");
+        let mut tls_stream = connector
+            .connect(server_name, tcp)
+            .await
+            .expect("tls handshake");
+
+        tls_stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+        let response = read_http_response(&mut tls_stream).await;
+        let text = String::from_utf8(response).expect("response utf-8");
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+        assert!(text.ends_with("ok"));
+
+        server.await.expect("server task").expect("gateway ok");
+        let _ = fs::remove_file(cert_path);
+        let _ = fs::remove_file(key_path);
+    }
+
+    fn write_test_tls_materials(prefix: &str) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+        let rcgen::CertifiedKey { cert, key_pair } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+                .expect("generate test cert");
+        let cert_pem = cert.pem();
+        let cert_der = cert.der().as_ref().to_vec();
+        let key_pem = key_pair.serialize_pem();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let cert_path = std::env::temp_dir().join(format!("{}-{}.crt.pem", prefix, unique));
+        let key_path = std::env::temp_dir().join(format!("{}-{}.key.pem", prefix, unique));
+        fs::write(&cert_path, cert_pem).expect("write cert");
+        fs::write(&key_path, key_pem).expect("write key");
+        (cert_path, key_path, cert_der)
+    }
+
+    async fn read_http_response<S>(stream: &mut S) -> Vec<u8>
+    where
+        S: AsyncRead + Unpin,
+    {
         let mut response = Vec::new();
         let mut temp = [0_u8; 1024];
         let header_end = loop {

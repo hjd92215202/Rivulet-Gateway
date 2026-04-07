@@ -14,7 +14,7 @@ use gateway_types::{
     RuntimeSettings,
 };
 use gateway_upstream::{EndpointState, UpstreamRegistry};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -187,12 +187,15 @@ impl ProxyService {
         Ok(response)
     }
 
-    pub async fn handle_connection(
+    pub async fn handle_connection<S>(
         &self,
         listener_name: &str,
-        downstream: &mut TcpStream,
+        downstream: &mut S,
         client_addr: SocketAddr,
-    ) -> std::result::Result<CompletedRequest, ProxyConnectionError> {
+    ) -> std::result::Result<CompletedRequest, ProxyConnectionError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
         // 这条链路是“真实网络请求”的主路径：
         // 读请求 -> 路由 -> 过滤器 -> 选上游 -> 转发 -> 回写响应。
         let request = HttpRequest::read_from(downstream, &self.timeouts)
@@ -781,7 +784,10 @@ struct HttpRequest {
 }
 
 impl HttpRequest {
-    async fn read_from(stream: &mut TcpStream, settings: &RuntimeSettings) -> Result<Self> {
+    async fn read_from<S>(stream: &mut S, settings: &RuntimeSettings) -> Result<Self>
+    where
+        S: AsyncRead + Unpin,
+    {
         const MAX_HEADER_BYTES: usize = 64 * 1024;
         let read_timeout = settings.downstream_read_timeout;
         let mut buffer = Vec::with_capacity(2048);
@@ -1410,6 +1416,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -1487,6 +1494,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "private".into(),
@@ -1608,6 +1616,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "share".into(),
@@ -1689,6 +1698,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "share".into(),
@@ -1784,6 +1794,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "share".into(),
@@ -1897,6 +1908,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "public".into(),
@@ -1991,6 +2003,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "public".into(),
@@ -2060,6 +2073,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![],
             upstreams: vec![UpstreamConfig {
@@ -2133,6 +2147,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![],
             upstreams: vec![UpstreamConfig {
@@ -2237,6 +2252,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -2353,6 +2369,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -2525,6 +2542,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -2633,6 +2651,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -2722,6 +2741,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -2819,6 +2839,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -2913,6 +2934,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -3068,6 +3090,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -3175,6 +3198,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -3270,6 +3294,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),
@@ -3379,6 +3404,7 @@ mod tests {
                 name: "edge".into(),
                 address: "127.0.0.1:0".into(),
                 protocol: ProtocolConfig::Http1,
+                tls: None,
             }],
             routes: vec![RouteConfig {
                 name: "default".into(),

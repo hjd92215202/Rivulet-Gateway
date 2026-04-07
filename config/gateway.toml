@@ -20,6 +20,11 @@ max_request_body_bytes = 1048576
 name = "public-http"
 address = "0.0.0.0:8080"
 protocol = "http1"
+# 可选：内建 TLS 终止（默认建议生产入口仍优先放在外置 TLS 层之后）
+# [listeners.tls]
+# cert_file = "/etc/rivulet/tls/server.crt"
+# key_file = "/etc/rivulet/tls/server.key"
+# min_version = "tls1_2"
 
 [[upstreams]]
 name = "api-cluster"
