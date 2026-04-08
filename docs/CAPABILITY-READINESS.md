@@ -14,7 +14,9 @@ This document maps the requested gateway capabilities to the current repository 
 - Protocol boundary rejection: unsupported HTTP/1.1 paths (`Transfer-Encoding`, `Transfer-Encoding + Content-Length`, `Expect: 100-continue`, pipelining, upstream transfer-encoding response) are now explicitly rejected with stable `501` behavior
 - Runtime thread model: `worker_threads` now drives Tokio multi-thread runtime bootstrap, and invalid zero value fails fast during config validation/startup
 - TLS termination (dual-track): built-in Rustls listener termination is now available through `listeners[].tls` with fail-fast cert/key validation, while external TLS termination remains the recommended production-first path
-- G1 gate closure status: workspace formatting/tests and script standards checks are green, including built-in HTTPS runtime path
+- Runtime reload control path: first cut is now available with Linux `SIGHUP` and loopback `POST /__admin/api/reload`, using validate-first atomic epoch swap and rollback on failure
+- Runtime observability alignment: access/runtime fields now expose `config_version`, `last_reload_result`, `last_reload_at`, `tls_enabled`, and `tls_listener`
+- G2 gate closure status: workspace formatting/tests and script standards checks are green, including built-in HTTPS runtime path and reload endpoint regression tests
 
 ### Not complete yet
 
@@ -25,7 +27,7 @@ This document maps the requested gateway capabilities to the current repository 
 
 - Milestone 1.x: keep strengthening auth entry, install validation, and grayscale operability
 - Milestone 2: keep hardening scoped share isolation and conservative in-memory rate limiting for protected or public routes
-- Milestone 2 (next focus): local hot-reload control path (`SIGHUP` + loopback admin endpoint) and public API reliability/capacity gates
+- Milestone 2 (next focus): public API reliability/capacity gates (threshold contract + Linux x86_64/arm64 baseline/soak/failure drills)
 - Later Milestone 2+: move from static policies to more production-shaped policy composition after observability and runtime controls are stronger
 
 ### Current implementation boundary
@@ -53,7 +55,9 @@ The current priority remains: keep the kernel narrow, correct, observable, and o
 - 协议边界拒绝矩阵：对暂不支持的 HTTP/1.1 路径（`Transfer-Encoding`、`Transfer-Encoding + Content-Length`、`Expect: 100-continue`、pipelining、上游 transfer-encoding 响应）已收敛为稳定 `501` 显式拒绝
 - 运行时线程模型：`worker_threads` 已驱动 Tokio 多线程 runtime 启动，非法零值会在配置校验/启动阶段快速失败
 - TLS 双轨：已支持通过 `listeners[].tls` 启用内建 Rustls 终止，并在证书/私钥加载失败或不匹配时启动快速失败；生产默认仍建议优先外置 TLS 终止
-- G1 门禁收口状态：workspace 格式化/测试与脚本规范检查已全部通过，且包含内建 HTTPS 运行时链路
+- 运行时热重载控制路径：首版已可用，支持 Linux `SIGHUP` 与仅 loopback 可访问的 `POST /__admin/api/reload`，采用“先校验后原子切换、失败回滚”语义
+- 运行时可观测性对齐：access/runtime 已输出 `config_version`、`last_reload_result`、`last_reload_at`、`tls_enabled`、`tls_listener`
+- G2 门禁收口状态：workspace 格式化/测试与脚本规范检查已全部通过，且包含内建 HTTPS 链路和 reload 回归测试
 
 ### 还没完整具备
 
@@ -64,7 +68,7 @@ The current priority remains: keep the kernel narrow, correct, observable, and o
 
 - 里程碑 1.x：继续加固鉴权入口、安装后验证和灰度可运维性
 - 里程碑 2：继续加固带作用域的分享访问隔离，以及面向受保护或公开页面的保守型内存限流
-- 里程碑 2（下一焦点）：本地热重载控制路径（`SIGHUP` + loopback 管理端点）与公网 API 可靠性/容量门禁
+- 里程碑 2（下一焦点）：公网 API 可靠性/容量门禁（阈值契约 + Linux x86_64/arm64 基线/长稳态/故障演练）
 - 里程碑 2 后段：在可观测性和运行时控制更强之后，再把静态策略演进成更接近生产形态的策略组合
 
 ### 当前实现边界

@@ -55,8 +55,9 @@ Current limits:
 - built-in TLS termination (Rustls) is now available for HTTP/1.1 listeners through `listeners[].tls`, with startup fail-fast on cert/key load or mismatch
 - production default is still external TLS termination first, while built-in TLS is ready for controlled gray rollout
 - `worker_threads` is wired into Tokio multi-thread runtime bootstrap, and `worker_threads = 0` fails fast at startup
-- G1 gate closure: workspace formatting/tests and script standards checks are green, including the built-in HTTPS runtime path
-- next focus: local hot-reload control path (`SIGHUP` + loopback admin endpoint) and public API reliability/capacity gates
+- G2 first-cut gate closure: local hot-reload control path is available (`SIGHUP` + loopback `POST /__admin/api/reload`) with validate-first atomic epoch swap and rollback-on-failure behavior
+- observability now includes stable runtime/reload fields (`config_version`, `last_reload_result`, `last_reload_at`, `tls_enabled`, `tls_listener`)
+- next focus: public API reliability/capacity gates (threshold enforcement + Linux x86_64/arm64 baseline/soak/failure drills)
 - Linux package and RPM flow are scaffolded, but native target build hosts are still preferred
 
 Run:
@@ -146,8 +147,9 @@ Project policy docs:
 - 已支持内建 TLS termination（Rustls），可通过 `listeners[].tls` 启用，并在证书/私钥加载失败或不匹配时快速失败
 - 生产默认仍建议优先使用外置 TLS 终止层，内建 TLS 用于受控灰度与并行验证
 - `worker_threads` 已接入 Tokio 多线程 runtime 启动流程，且 `worker_threads = 0` 会在启动期快速失败
-- G1 门禁已收口：workspace 格式化/测试与脚本规范检查均为绿色，且已覆盖内建 HTTPS 运行时链路
-- 下一焦点：本地热重载控制路径（`SIGHUP` + loopback 管理端点）与公网 API 可靠性/容量门禁
+- G2 首版门禁已收口：本地热重载控制路径已可用（`SIGHUP` + 仅 loopback 可访问的 `POST /__admin/api/reload`），并具备“先校验后原子切换、失败回滚继续服务”语义
+- 可观测性已补齐稳定字段（`config_version`、`last_reload_result`、`last_reload_at`、`tls_enabled`、`tls_listener`）
+- 下一焦点：公网 API 可靠性/容量门禁（阈值门禁 + Linux x86_64/arm64 基线/长稳态/故障演练）
 - Linux 安装包和 RPM 流程已具备骨架，但仍更推荐在原生目标平台构建
 
 运行方式：

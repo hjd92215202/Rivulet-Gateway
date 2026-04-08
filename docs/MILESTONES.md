@@ -146,13 +146,15 @@ Implemented today:
 - explicit protocol rejection matrix for unsupported transfer-encoding paths
 - `worker_threads` wired into runtime bootstrap with fail-fast validation
 - dual-track TLS listener support with fail-fast cert/key checks and passing HTTPS runtime test
+- local hot-reload control path (`SIGHUP` + loopback `POST /__admin/api/reload`) with validate-first atomic swap and rollback-on-failure behavior
+- runtime/access observability fields for reload and TLS context (`config_version`, `last_reload_result`, `last_reload_at`, `tls_enabled`, `tls_listener`)
+- public API gate schema contract check wired into CI/release
 - nightly benchmark collection
 - checksum generation and verification
 - GitHub Release automation by version tag
 
 Still required before stronger production claims:
 
-- local hot-reload control path with atomic config swap and failure rollback behavior
 - public API reliability/capacity gates with stable SLO reporting
 - stronger per-asset signing policy
 - native Linux install automation in disposable environments
@@ -162,7 +164,7 @@ Still required before stronger production claims:
 
 项目：`Rivulet Gateway / 溪流网关`
 
-基线日期：2026 年 4 月 7 日
+基线日期：2026 年 4 月 8 日
 
 这份路线图把当前仓库状态拆成分阶段里程碑，并为每个阶段定义退出标准。
 整体策略刻意保守：我们的目标是可安全推进到生产，而不是追求最快功能速度。
@@ -216,14 +218,13 @@ Still required before stronger production claims:
 
 状态：
 
-- 进行中，TLS 双轨门禁已收口并通过验收
+- 进行中，TLS 双轨与 G2 热重载首版门禁已收口并通过验收
 
 必要工作：
 
 - 更完整的下游 keepalive 生命周期处理
-- 本地热重载控制路径（`SIGHUP` + loopback 管理端点）与原子配置切换语义
-  首版保持“监听地址/端口变更需重启”边界
-- 结构化 access log 与运维控制
+- 热重载边界继续加固（listener `name/address/protocol`、`worker_threads` 变更仍需重启）
+- 结构化 access log 与运维控制的进一步增强
 - 更强的被动与主动健康行为
 - Linux x86_64 + arm64 的公网 API 可靠性与容量门禁
 - 在一次性环境里完成升级和回滚验证
@@ -304,13 +305,15 @@ Still required before stronger production claims:
 - 对不支持 transfer-encoding 路径的显式协议拒绝矩阵
 - `worker_threads` 已接入 runtime 启动流程并具备快速失败校验
 - TLS 双轨监听能力已接入，证书/私钥 fail-fast 校验与 HTTPS 运行时测试通过
+- 本地热重载控制路径已接入（`SIGHUP` + loopback `POST /__admin/api/reload`），并具备“先校验后原子切换、失败回滚继续服务”语义
+- 运行时/访问日志已输出重载与 TLS 上下文字段（`config_version`、`last_reload_result`、`last_reload_at`、`tls_enabled`、`tls_listener`）
+- 公网 API 门禁阈值结构检查已接入 CI/release
 - 夜间 benchmark 收集
 - checksum 生成与校验
 - 基于版本标签的 GitHub Release 自动发布
 
 在做更强生产声明前仍需补齐：
 
-- 本地热重载控制路径（原子切换与失败回滚语义）
 - 公网 API 可靠性/容量门禁与稳定 SLO 报告
 - 更强的逐产物签名策略
 - 一次性环境中的原生 Linux 安装自动化
