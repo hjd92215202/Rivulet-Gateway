@@ -2,158 +2,134 @@
 
 ## English
 
-This document defines the baseline and public API gate benchmark flow for Linux `x86_64` and `arm64`.
+This document defines the public API gate baseline benchmark contract for Linux `x86_64` and `arm64`.
 
-### 1. Baseline Report Script
-
-Run the conservative baseline script on a Linux server:
-
-```bash
-bash ./scripts/linux-baseline-report.sh \
-  --url http://127.0.0.1:8080/ngx/ \
-  --host llmtamer.com:8080 \
-  --duration 15 \
-  --label llmtamer-loopback
-```
-
-Report output:
-
-```text
-./target/server-bench/<timestamp>-<label>/report.md
-```
-
-### 2. Public API Gate Script
-
-Use the gate script for production SLO scoring and release blocking:
+### Core command
 
 ```bash
 bash ./scripts/linux-public-api-gate.sh \
   --mode evaluate \
   --profile standard \
+  --arch linux-x86_64 \
   --artifact ./dist/<target>/rivulet-gateway-<version>.tar.gz \
   --format tar.gz \
   --output-dir ./target/public-api-gate/manual-evaluate
 ```
 
-Supported modes:
+For arm64:
 
-- `schema-check`: validate threshold schema only
-- `baseline`: steady-state scenario
-- `soak`: longer steady-state scenario
-- `failure-drill`: upstream fault and recovery scenario
-- `evaluate`: run all scenarios and produce final gate decision
+```bash
+--arch linux-arm64
+```
 
-Supported profiles:
+### Modes
 
-- `standard` (default, blocking)
-- `strict` (blocking, tighter thresholds)
-- `observe` (non-blocking, report-first)
+- `schema-check`: threshold schema and profile-arch contract validation
+- `baseline`: steady-state samples
+- `soak`: longer steady-state samples
+- `failure-drill`: upstream fault and recovery drills
+- `evaluate`: baseline + soak + failure-drill with final gate decision
 
-### 3. Standard SLO Profile (Blocking)
+### Standard profile (blocking)
 
-Current `standard` threshold contract:
+`standard` is now architecture-aware and blocking in both CI and release.
 
-- availability `>= 99.9`
-- gateway-originated `5xx` ratio `<= 0.1`
-- `p95 <= 80 ms`
-- `p99 <= 200 ms`
+For each architecture, thresholds include:
 
-Notes:
+- availability minimum
+- gateway `5xx` ratio maximum
+- p95 and p99 latency limits
+- request floor: `MIN_TOTAL_REQUESTS_BASELINE` and `MIN_TOTAL_REQUESTS_SOAK`
 
-- gateway `5xx` and upstream business `5xx` are counted separately
-- only gateway-originated faults are used by the gateway-fault threshold
-- failure drill must pass recovery checks
+### Anti-jitter scoring
 
-### 4. Output Contract
+- 3 samples per baseline/soak scenario
+- median-based scoring
+- request-floor checks must pass, otherwise gate fails even if latency/error thresholds pass
 
-Every mode writes:
+### Long-run window (default)
 
-- machine-readable `result.json`
-- human-readable `summary.md`
+- `baseline`: 3 rounds × 20s
+- `soak`: 3 rounds × 60s
+- `failure-drill`: each drill path 12s
 
-For `evaluate`, these files are the audit source for CI/release gate decisions.
+### Output contract
 
-### 5. Operational Rules
+Every run writes:
 
-- scripts should auto-install dependencies (`apt-get`, `dnf`, `yum` when available)
-- scripts should auto-clean background processes and exit automatically
-- run progressively; avoid unsafe sudden load spikes
+- `result.json` (machine-readable)
+- `summary.md` (human-readable)
+
+`result.json` now includes:
+
+- `arch`
+- `duration_profile` (currently `long`)
+- `request_floor_checks`
+- explicit `failure_reasons`
 
 ## 中文
 
-本文档定义溪流网关在 Linux `x86_64` 和 `arm64` 上的基线压测与公网 API 门禁压测流程。
+本文档定义溪流网关在 Linux `x86_64` 与 `arm64` 上的公网 API 门禁基线压测契约。
 
-### 1. 基线报告脚本
-
-在 Linux 服务器执行保守基线脚本：
-
-```bash
-bash ./scripts/linux-baseline-report.sh \
-  --url http://127.0.0.1:8080/ngx/ \
-  --host llmtamer.com:8080 \
-  --duration 15 \
-  --label llmtamer-loopback
-```
-
-报告输出位置：
-
-```text
-./target/server-bench/<timestamp>-<label>/report.md
-```
-
-### 2. 公网 API 门禁脚本
-
-使用门禁脚本执行生产口径 SLO 判分与发版阻断：
+### 核心命令
 
 ```bash
 bash ./scripts/linux-public-api-gate.sh \
   --mode evaluate \
   --profile standard \
+  --arch linux-x86_64 \
   --artifact ./dist/<target>/rivulet-gateway-<version>.tar.gz \
   --format tar.gz \
   --output-dir ./target/public-api-gate/manual-evaluate
 ```
 
-支持模式：
+arm64 只需改为：
 
-- `schema-check`：仅校验阈值配置结构
-- `baseline`：稳态场景
-- `soak`：长稳态场景
-- `failure-drill`：上游故障与恢复演练场景
-- `evaluate`：串行执行全部场景并给出最终门禁结论
+```bash
+--arch linux-arm64
+```
 
-支持档位：
+### 支持模式
 
-- `standard`（默认，阻断）
-- `strict`（阻断，更严格）
-- `observe`（不阻断，报告优先）
+- `schema-check`：阈值结构与 profile-arch 契约校验
+- `baseline`：稳态样本
+- `soak`：长稳态样本
+- `failure-drill`：上游故障与恢复演练
+- `evaluate`：串行执行 baseline + soak + failure-drill 并给出最终门禁结论
 
-### 3. 标准档 SLO（阻断口径）
+### standard 阻断档
 
-当前 `standard` 阈值契约：
+`standard` 现已升级为按架构阈值，并且在 CI 与 release 同口径阻断。
 
-- 可用性 `>= 99.9`
-- 网关侧 `5xx` 比例 `<= 0.1`
-- `p95 <= 80 ms`
-- `p99 <= 200 ms`
+每个架构都包含以下阈值：
 
-说明：
+- 可用性下限
+- 网关侧 `5xx` 比例上限
+- p95 / p99 延迟上限
+- 最小样本门槛：`MIN_TOTAL_REQUESTS_BASELINE` 与 `MIN_TOTAL_REQUESTS_SOAK`
 
-- 网关侧 `5xx` 与上游业务 `5xx` 分开统计
-- 门禁阈值只使用网关侧故障比例
-- 故障演练场景必须通过恢复检查
+### 抗抖动判分
 
-### 4. 产出契约
+- baseline/soak 均执行 3 次采样
+- 使用中位数判分
+- 请求量门槛必须通过，否则即使延迟与错误率达标也判定失败
 
-每个模式都会输出：
+### 长跑窗口（默认）
 
-- 机器可读 `result.json`
-- 人类可读 `summary.md`
+- `baseline`：3 轮 × 20 秒
+- `soak`：3 轮 × 60 秒
+- `failure-drill`：每个故障子场景 12 秒
 
-其中 `evaluate` 产物会作为 CI/release 门禁与审计回溯依据。
+### 产出契约
 
-### 5. 运行规则
+每次运行固定输出：
 
-- 脚本在可用时自动安装依赖（`apt-get`、`dnf`、`yum`）
-- 脚本自动清理后台进程并自动退出
-- 压测需循序渐进，避免突发高压导致主机不稳定
+- `result.json`（机器可读）
+- `summary.md`（人工可读）
+
+`result.json` 新增字段：
+
+- `arch`
+- `duration_profile`（当前为 `long`）
+- `request_floor_checks`
+- 明确的 `failure_reasons`
