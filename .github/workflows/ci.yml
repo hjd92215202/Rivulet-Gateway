@@ -30,7 +30,7 @@ jobs:
         run: bash ./scripts/check-script-standards.sh
 
       - name: Validate public API gate schema
-        run: bash ./scripts/linux-public-api-gate.sh
+        run: bash ./scripts/linux-public-api-gate.sh --mode schema-check --profile standard
 
   test-linux:
     name: Test Linux x86_64
@@ -380,6 +380,94 @@ jobs:
             ${{ runner.temp }}/rivulet-ci-systemd-arm-rpm
           if-no-files-found: ignore
 
+  public-api-gate-linux-x86_64:
+    name: Public API Gate Linux x86_64
+    runs-on: ubuntu-24.04
+    needs:
+      - package-linux-x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Linux x86_64 artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: rivulet-linux-x86_64
+          path: ci-public-api-assets/x86_64
+
+      - name: Resolve Linux x86_64 tarball
+        id: artifacts
+        run: |
+          tarball="$(find ci-public-api-assets/x86_64 -type f -name '*.tar.gz' | head -n 1)"
+          if [[ -z "$tarball" ]]; then
+            echo "failed to resolve Linux x86_64 tarball artifact" >&2
+            exit 1
+          fi
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Run public API gate (evaluate)
+        run: |
+          bash ./scripts/linux-public-api-gate.sh \
+            --mode evaluate \
+            --profile standard \
+            --artifact "${{ steps.artifacts.outputs.tarball }}" \
+            --format tar.gz \
+            --gateway-port 18584 \
+            --backend-port 19584 \
+            --output-dir "$RUNNER_TEMP/rivulet-ci-public-api-gate-x86"
+
+      - name: Upload Linux x86_64 public API gate report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-ci-public-api-gate-linux-x86_64
+          path: ${{ runner.temp }}/rivulet-ci-public-api-gate-x86
+          if-no-files-found: ignore
+
+  public-api-gate-linux-arm64:
+    name: Public API Gate Linux arm64
+    runs-on: ubuntu-24.04-arm
+    needs:
+      - package-linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Linux arm64 artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: rivulet-linux-arm64
+          path: ci-public-api-assets/arm64
+
+      - name: Resolve Linux arm64 tarball
+        id: artifacts
+        run: |
+          tarball="$(find ci-public-api-assets/arm64 -type f -name '*.tar.gz' | head -n 1)"
+          if [[ -z "$tarball" ]]; then
+            echo "failed to resolve Linux arm64 tarball artifact" >&2
+            exit 1
+          fi
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Run public API gate (evaluate)
+        run: |
+          bash ./scripts/linux-public-api-gate.sh \
+            --mode evaluate \
+            --profile standard \
+            --artifact "${{ steps.artifacts.outputs.tarball }}" \
+            --format tar.gz \
+            --gateway-port 18684 \
+            --backend-port 19684 \
+            --output-dir "$RUNNER_TEMP/rivulet-ci-public-api-gate-arm"
+
+      - name: Upload Linux arm64 public API gate report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-ci-public-api-gate-linux-arm64
+          path: ${{ runner.temp }}/rivulet-ci-public-api-gate-arm
+          if-no-files-found: ignore
+
   supply-chain:
     name: Supply Chain Checks
     runs-on: ubuntu-24.04
@@ -389,6 +477,8 @@ jobs:
       - package-linux-arm64
       - systemd-lifecycle-linux-x86_64
       - systemd-lifecycle-linux-arm64
+      - public-api-gate-linux-x86_64
+      - public-api-gate-linux-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v5
