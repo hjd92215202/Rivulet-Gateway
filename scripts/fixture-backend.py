@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import signal
 import sys
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -57,6 +59,76 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if path == "/fixture/default":
             body = b"x" * self.server.default_bytes
             self._write_response(HTTPStatus.OK, body, "application/octet-stream", send_body)
+            return
+
+        status_prefix = "/fixture/status/"
+        if path.startswith(status_prefix):
+            code_text = path[len(status_prefix) :]
+            if not code_text.isdigit():
+                self._write_response(
+                    HTTPStatus.BAD_REQUEST,
+                    b"invalid status code\n",
+                    "text/plain; charset=utf-8",
+                    send_body,
+                )
+                return
+            code = int(code_text)
+            if code < 100 or code > 599:
+                self._write_response(
+                    HTTPStatus.BAD_REQUEST,
+                    b"status code out of range\n",
+                    "text/plain; charset=utf-8",
+                    send_body,
+                )
+                return
+            if code not in HTTPStatus._value2member_map_:
+                self._write_response(
+                    HTTPStatus.BAD_REQUEST,
+                    b"unsupported status code\n",
+                    "text/plain; charset=utf-8",
+                    send_body,
+                )
+                return
+            status = HTTPStatus(code)
+            body = f"status {code}\n".encode("utf-8")
+            self._write_response(status, body, "text/plain; charset=utf-8", send_body)
+            return
+
+        delay_prefix = "/fixture/delay/"
+        if path.startswith(delay_prefix):
+            delay_text = path[len(delay_prefix) :]
+            if not delay_text.isdigit():
+                self._write_response(
+                    HTTPStatus.BAD_REQUEST,
+                    b"invalid delay\n",
+                    "text/plain; charset=utf-8",
+                    send_body,
+                )
+                return
+            delay_ms = int(delay_text)
+            if delay_ms < 0 or delay_ms > 30000:
+                self._write_response(
+                    HTTPStatus.BAD_REQUEST,
+                    b"delay out of range\n",
+                    "text/plain; charset=utf-8",
+                    send_body,
+                )
+                return
+            time.sleep(delay_ms / 1000.0)
+            body = f"delayed {delay_ms}ms\n".encode("utf-8")
+            self._write_response(HTTPStatus.OK, body, "text/plain; charset=utf-8", send_body)
+            return
+
+        if path == "/fixture/reset":
+            # 故障演练路径：模拟上游连接在响应前被重置。
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.connection.close()
+            except OSError:
+                pass
             return
 
         prefix = "/fixture/bytes/"
@@ -114,6 +186,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         self.send_response(status.value, status.phrase)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Rivulet-Fixture", "true")
         self.send_header("Connection", "close")
         self.end_headers()
         if send_body:
