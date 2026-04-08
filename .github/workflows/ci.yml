@@ -383,6 +383,7 @@ jobs:
   public-api-gate-linux-x86_64:
     name: Public API Gate Linux x86_64
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     needs:
       - package-linux-x86_64
     steps:
@@ -410,6 +411,7 @@ jobs:
           bash ./scripts/linux-public-api-gate.sh \
             --mode evaluate \
             --profile standard \
+            --arch linux-x86_64 \
             --artifact "${{ steps.artifacts.outputs.tarball }}" \
             --format tar.gz \
             --gateway-port 18584 \
@@ -427,6 +429,7 @@ jobs:
   public-api-gate-linux-arm64:
     name: Public API Gate Linux arm64
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
     needs:
       - package-linux-arm64
     steps:
@@ -454,6 +457,7 @@ jobs:
           bash ./scripts/linux-public-api-gate.sh \
             --mode evaluate \
             --profile standard \
+            --arch linux-arm64 \
             --artifact "${{ steps.artifacts.outputs.tarball }}" \
             --format tar.gz \
             --gateway-port 18684 \
