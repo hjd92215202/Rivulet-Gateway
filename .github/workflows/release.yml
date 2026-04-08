@@ -27,6 +27,9 @@ jobs:
       - name: Check repository shell scripts
         run: bash ./scripts/check-script-standards.sh
 
+      - name: Validate public API gate schema
+        run: bash ./scripts/linux-public-api-gate.sh
+
   package-linux-x86_64:
     name: Release Linux x86_64
     runs-on: ubuntu-24.04
