@@ -6,6 +6,9 @@ source "$REPO_ROOT/scripts/lib/linux-bootstrap.sh"
 
 MODE="schema-check"
 PROFILE="standard"
+TARGET_ARCH=""
+RESOLVED_ARCH=""
+ARCH_KEY=""
 THRESHOLDS_FILE="$REPO_ROOT/scripts/public-api-thresholds.env"
 OUTPUT_DIR=""
 ARTIFACT_PATH=""
@@ -27,19 +30,23 @@ PACKAGE_ROOT=""
 PACKAGE_BIN=""
 GATEWAY_PID=""
 BACKEND_PID=""
+DURATION_PROFILE="long"
+LEGACY_FLAT_KEYS_PRESENT="false"
 
-# 默认负载配置保持保守，优先生产可用验证，不追求极限跑分。
-BASELINE_DURATION_SECS=6
+# 公网门禁默认走长跑窗口，减少偶发抖动造成的误判。
+BASELINE_DURATION_SECS=20
 BASELINE_CONCURRENCY=12
-SOAK_DURATION_SECS=12
+SOAK_DURATION_SECS=60
 SOAK_CONCURRENCY=16
 SAMPLE_COUNT=3
-FAILURE_DURATION_SECS=4
+FAILURE_DURATION_SECS=12
 
 THRESHOLD_AVAILABILITY=""
 THRESHOLD_GATEWAY_5XX_RATIO_MAX=""
 THRESHOLD_P95_MS=""
 THRESHOLD_P99_MS=""
+THRESHOLD_MIN_TOTAL_REQUESTS_BASELINE=""
+THRESHOLD_MIN_TOTAL_REQUESTS_SOAK=""
 
 usage() {
   cat <<'EOF'
@@ -50,8 +57,9 @@ Execute or validate public API reliability/capacity gate scenarios.
 Options:
   --mode <schema-check|baseline|soak|failure-drill|evaluate>
   --profile <standard|strict|observe>          default: standard
+  --arch <linux-x86_64|linux-arm64>            optional, defaults to uname-derived architecture
   --threshold-file <path>                      default: ./scripts/public-api-thresholds.env
-  --output-dir <path>                          default: ./target/public-api-gate/<timestamp>-<mode>-<profile>
+  --output-dir <path>                          default: ./target/public-api-gate/<timestamp>-<mode>-<profile>-<arch>
   --artifact <path>                            required for non-schema modes, accepts .tar.gz or .rpm
   --format <tar.gz|rpm>                        optional, auto-detected when omitted
   --host <host>                                default: localhost
@@ -60,7 +68,7 @@ Options:
   -h, --help
 
 Modes:
-  schema-check   validate threshold schema and profile contracts only
+  schema-check   validate threshold schema and profile-arch contracts only
   baseline       run steady-state samples and output scenario result
   soak           run longer steady-state samples and output scenario result
   failure-drill  run upstream business error + timeout/reset/backend-down drills
@@ -102,20 +110,30 @@ validate_numeric() {
   [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "$key must be numeric, got '$value'"
 }
 
+validate_positive_integer() {
+  local key="$1"
+  local value="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] || fail "$key must be an integer, got '$value'"
+  [[ "$value" -gt 0 ]] || fail "$key must be greater than 0"
+}
+
 validate_threshold_value() {
   local key="$1"
   local value="$2"
-
-  validate_numeric "$key" "$value"
-
   case "$key" in
+    *_MIN_TOTAL_REQUESTS_BASELINE|*_MIN_TOTAL_REQUESTS_SOAK)
+      validate_positive_integer "$key" "$value"
+      ;;
     *_SLO_AVAILABILITY)
+      validate_numeric "$key" "$value"
       awk "BEGIN {exit !($value > 0 && $value <= 100)}" || fail "$key must be within (0, 100]"
       ;;
     *_GATEWAY_5XX_RATIO_MAX)
+      validate_numeric "$key" "$value"
       awk "BEGIN {exit !($value >= 0 && $value <= 100)}" || fail "$key must be within [0, 100]"
       ;;
     *_P95_MS|*_P99_MS)
+      validate_numeric "$key" "$value"
       awk "BEGIN {exit !($value > 0)}" || fail "$key must be greater than 0"
       ;;
     *)
@@ -126,10 +144,11 @@ validate_threshold_value() {
 
 is_supported_threshold_key() {
   local key="$1"
+  if [[ "$key" =~ ^PUBLIC_API_(STANDARD|STRICT|OBSERVE)_LINUX_(X86_64|ARM64)_(SLO_AVAILABILITY|GATEWAY_5XX_RATIO_MAX|P95_MS|P99_MS|MIN_TOTAL_REQUESTS_BASELINE|MIN_TOTAL_REQUESTS_SOAK)$ ]]; then
+    return 0
+  fi
+
   case "$key" in
-    PUBLIC_API_STANDARD_SLO_AVAILABILITY|PUBLIC_API_STANDARD_GATEWAY_5XX_RATIO_MAX|PUBLIC_API_STANDARD_P95_MS|PUBLIC_API_STANDARD_P99_MS|\
-    PUBLIC_API_STRICT_SLO_AVAILABILITY|PUBLIC_API_STRICT_GATEWAY_5XX_RATIO_MAX|PUBLIC_API_STRICT_P95_MS|PUBLIC_API_STRICT_P99_MS|\
-    PUBLIC_API_OBSERVE_SLO_AVAILABILITY|PUBLIC_API_OBSERVE_GATEWAY_5XX_RATIO_MAX|PUBLIC_API_OBSERVE_P95_MS|PUBLIC_API_OBSERVE_P99_MS|\
     PUBLIC_API_SLO_AVAILABILITY|PUBLIC_API_GATEWAY_5XX_RATIO_MAX|PUBLIC_API_P95_MS|PUBLIC_API_P99_MS)
       return 0
       ;;
@@ -146,9 +165,7 @@ get_threshold_value() {
     {
       raw=$0
       sub(/^[[:space:]]+/, "", raw)
-      if (raw == "" || substr(raw, 1, 1) == "#") {
-        next
-      }
+      if (raw == "" || substr(raw, 1, 1) == "#") next
       split(raw, parts, "=")
       name=parts[1]
       value=substr(raw, index(raw, "=") + 1)
@@ -166,23 +183,53 @@ require_threshold_value() {
   local key="$1"
   local file_path="$2"
   local value=""
-
   value="$(get_threshold_value "$key" "$file_path")"
-  if [[ -z "$value" ]]; then
-    fail "missing required key: $key"
-  fi
+  [[ -n "$value" ]] || fail "missing required key: $key"
   printf '%s\n' "$value"
+}
+
+to_profile_upper() {
+  case "$1" in
+    standard) printf '%s\n' "STANDARD" ;;
+    strict) printf '%s\n' "STRICT" ;;
+    observe) printf '%s\n' "OBSERVE" ;;
+    *) fail "unsupported profile: $1" ;;
+  esac
+}
+
+normalize_arch() {
+  local raw_arch="$1"
+  case "$raw_arch" in
+    linux-x86_64|x86_64|amd64) printf '%s\n' "linux-x86_64" ;;
+    linux-arm64|aarch64|arm64) printf '%s\n' "linux-arm64" ;;
+    *) fail "unsupported arch value: $raw_arch" ;;
+  esac
+}
+
+resolve_target_arch() {
+  local raw_arch=""
+  if [[ -n "$TARGET_ARCH" ]]; then
+    RESOLVED_ARCH="$(normalize_arch "$TARGET_ARCH")"
+  else
+    raw_arch="$(uname -m)"
+    RESOLVED_ARCH="$(normalize_arch "$raw_arch")"
+  fi
+  case "$RESOLVED_ARCH" in
+    linux-x86_64) ARCH_KEY="LINUX_X86_64" ;;
+    linux-arm64) ARCH_KEY="LINUX_ARM64" ;;
+    *) fail "failed to map resolved arch: $RESOLVED_ARCH" ;;
+  esac
 }
 
 load_threshold_profile() {
   local file_path="$1"
-
-  if [[ ! -f "$file_path" ]]; then
-    fail "missing threshold file: $file_path"
-  fi
-
+  local profile_upper=""
+  local prefix=""
   local key=""
   local value=""
+
+  [[ -f "$file_path" ]] || fail "missing threshold file: $file_path"
+
   while IFS='=' read -r key value; do
     key="$(echo "$key" | sed 's/[[:space:]]//g')"
     value="$(echo "$value" | sed 's/[[:space:]]//g')"
@@ -192,35 +239,19 @@ load_threshold_profile() {
     validate_threshold_value "$key" "$value"
   done <"$file_path"
 
-  case "$PROFILE" in
-    standard)
-      # 向后兼容：若标准档新键不存在，回退到旧版扁平键。
-      THRESHOLD_AVAILABILITY="$(get_threshold_value "PUBLIC_API_STANDARD_SLO_AVAILABILITY" "$file_path")"
-      THRESHOLD_GATEWAY_5XX_RATIO_MAX="$(get_threshold_value "PUBLIC_API_STANDARD_GATEWAY_5XX_RATIO_MAX" "$file_path")"
-      THRESHOLD_P95_MS="$(get_threshold_value "PUBLIC_API_STANDARD_P95_MS" "$file_path")"
-      THRESHOLD_P99_MS="$(get_threshold_value "PUBLIC_API_STANDARD_P99_MS" "$file_path")"
+  # 保留旧平铺键，仅用于兼容性检测展示，不参与按架构阻断判分。
+  if [[ -n "$(get_threshold_value "PUBLIC_API_SLO_AVAILABILITY" "$file_path")" ]]; then
+    LEGACY_FLAT_KEYS_PRESENT="true"
+  fi
 
-      [[ -n "$THRESHOLD_AVAILABILITY" ]] || THRESHOLD_AVAILABILITY="$(require_threshold_value "PUBLIC_API_SLO_AVAILABILITY" "$file_path")"
-      [[ -n "$THRESHOLD_GATEWAY_5XX_RATIO_MAX" ]] || THRESHOLD_GATEWAY_5XX_RATIO_MAX="$(require_threshold_value "PUBLIC_API_GATEWAY_5XX_RATIO_MAX" "$file_path")"
-      [[ -n "$THRESHOLD_P95_MS" ]] || THRESHOLD_P95_MS="$(require_threshold_value "PUBLIC_API_P95_MS" "$file_path")"
-      [[ -n "$THRESHOLD_P99_MS" ]] || THRESHOLD_P99_MS="$(require_threshold_value "PUBLIC_API_P99_MS" "$file_path")"
-      ;;
-    strict)
-      THRESHOLD_AVAILABILITY="$(require_threshold_value "PUBLIC_API_STRICT_SLO_AVAILABILITY" "$file_path")"
-      THRESHOLD_GATEWAY_5XX_RATIO_MAX="$(require_threshold_value "PUBLIC_API_STRICT_GATEWAY_5XX_RATIO_MAX" "$file_path")"
-      THRESHOLD_P95_MS="$(require_threshold_value "PUBLIC_API_STRICT_P95_MS" "$file_path")"
-      THRESHOLD_P99_MS="$(require_threshold_value "PUBLIC_API_STRICT_P99_MS" "$file_path")"
-      ;;
-    observe)
-      THRESHOLD_AVAILABILITY="$(require_threshold_value "PUBLIC_API_OBSERVE_SLO_AVAILABILITY" "$file_path")"
-      THRESHOLD_GATEWAY_5XX_RATIO_MAX="$(require_threshold_value "PUBLIC_API_OBSERVE_GATEWAY_5XX_RATIO_MAX" "$file_path")"
-      THRESHOLD_P95_MS="$(require_threshold_value "PUBLIC_API_OBSERVE_P95_MS" "$file_path")"
-      THRESHOLD_P99_MS="$(require_threshold_value "PUBLIC_API_OBSERVE_P99_MS" "$file_path")"
-      ;;
-    *)
-      fail "unsupported profile: $PROFILE"
-      ;;
-  esac
+  profile_upper="$(to_profile_upper "$PROFILE")"
+  prefix="PUBLIC_API_${profile_upper}_${ARCH_KEY}_"
+  THRESHOLD_AVAILABILITY="$(require_threshold_value "${prefix}SLO_AVAILABILITY" "$file_path")"
+  THRESHOLD_GATEWAY_5XX_RATIO_MAX="$(require_threshold_value "${prefix}GATEWAY_5XX_RATIO_MAX" "$file_path")"
+  THRESHOLD_P95_MS="$(require_threshold_value "${prefix}P95_MS" "$file_path")"
+  THRESHOLD_P99_MS="$(require_threshold_value "${prefix}P99_MS" "$file_path")"
+  THRESHOLD_MIN_TOTAL_REQUESTS_BASELINE="$(require_threshold_value "${prefix}MIN_TOTAL_REQUESTS_BASELINE" "$file_path")"
+  THRESHOLD_MIN_TOTAL_REQUESTS_SOAK="$(require_threshold_value "${prefix}MIN_TOTAL_REQUESTS_SOAK" "$file_path")"
 }
 
 resolve_mode_dependencies() {
@@ -228,7 +259,6 @@ resolve_mode_dependencies() {
   if [[ "$MODE" == "schema-check" ]]; then
     return 0
   fi
-
   ensure_linux_commands curl tar
 }
 
@@ -243,7 +273,6 @@ resolve_python_bin() {
       return 0
     fi
   done
-
   fail "python runtime is unavailable; checked python3 and python"
 }
 
@@ -251,9 +280,8 @@ resolve_output_layout() {
   local timestamp=""
   if [[ -z "$OUTPUT_DIR" ]]; then
     timestamp="$(date +%Y%m%d-%H%M%S)"
-    OUTPUT_DIR="$REPO_ROOT/target/public-api-gate/$timestamp-$MODE-$PROFILE"
+    OUTPUT_DIR="$REPO_ROOT/target/public-api-gate/$timestamp-$MODE-$PROFILE-$RESOLVED_ARCH"
   fi
-
   WORK_DIR="$OUTPUT_DIR"
   EXTRACT_DIR="$WORK_DIR/extracted"
   RUNTIME_DIR="$WORK_DIR/runtime"
@@ -262,32 +290,20 @@ resolve_output_layout() {
   RESULT_PATH="$WORK_DIR/result.json"
   SUMMARY_PATH="$WORK_DIR/summary.md"
   CONFIG_PATH="$RUNTIME_DIR/gateway.toml"
-
   mkdir -p "$WORK_DIR" "$EXTRACT_DIR" "$RUNTIME_DIR" "$LOG_DIR" "$RUNS_DIR"
 }
 
 resolve_artifact_format() {
   if [[ -n "$FORMAT" ]]; then
     case "$FORMAT" in
-      tar.gz|rpm)
-        ;;
-      *)
-        fail "unsupported format: $FORMAT"
-        ;;
+      tar.gz|rpm) return 0 ;;
+      *) fail "unsupported format: $FORMAT" ;;
     esac
-    return 0
   fi
-
   case "$ARTIFACT_PATH" in
-    *.tar.gz)
-      FORMAT="tar.gz"
-      ;;
-    *.rpm)
-      FORMAT="rpm"
-      ;;
-    *)
-      fail "cannot infer artifact format from path: $ARTIFACT_PATH"
-      ;;
+    *.tar.gz) FORMAT="tar.gz" ;;
+    *.rpm) FORMAT="rpm" ;;
+    *) fail "cannot infer artifact format from path: $ARTIFACT_PATH" ;;
   esac
 }
 
@@ -295,18 +311,10 @@ resolve_artifact() {
   if [[ "$MODE" == "schema-check" ]]; then
     return 0
   fi
-
-  if [[ -z "$ARTIFACT_PATH" ]]; then
-    fail "--artifact is required for mode=$MODE"
-  fi
-
-  if [[ ! -f "$ARTIFACT_PATH" ]]; then
-    fail "artifact not found: $ARTIFACT_PATH"
-  fi
-
+  [[ -n "$ARTIFACT_PATH" ]] || fail "--artifact is required for mode=$MODE"
+  [[ -f "$ARTIFACT_PATH" ]] || fail "artifact not found: $ARTIFACT_PATH"
   ARTIFACT_PATH="$(normalize_path "$ARTIFACT_PATH")"
   resolve_artifact_format
-
   if [[ "$FORMAT" == "rpm" ]]; then
     ensure_linux_commands rpm2cpio cpio
   fi
@@ -333,24 +341,13 @@ prepare_package_binary() {
   if [[ "$MODE" == "schema-check" ]]; then
     return 0
   fi
-
   print_stage "extracting package payload for mode=$MODE"
   case "$FORMAT" in
-    tar.gz)
-      PACKAGE_ROOT="$(extract_tarball_root "$ARTIFACT_PATH")"
-      ;;
-    rpm)
-      PACKAGE_ROOT="$(extract_rpm_root "$ARTIFACT_PATH")"
-      ;;
-    *)
-      fail "unsupported format while extracting: $FORMAT"
-      ;;
+    tar.gz) PACKAGE_ROOT="$(extract_tarball_root "$ARTIFACT_PATH")" ;;
+    rpm) PACKAGE_ROOT="$(extract_rpm_root "$ARTIFACT_PATH")" ;;
+    *) fail "unsupported format while extracting: $FORMAT" ;;
   esac
-
-  if [[ -z "$PACKAGE_ROOT" || ! -d "$PACKAGE_ROOT" ]]; then
-    fail "failed to resolve extracted package root"
-  fi
-
+  [[ -n "$PACKAGE_ROOT" && -d "$PACKAGE_ROOT" ]] || fail "failed to resolve extracted package root"
   PACKAGE_BIN="$PACKAGE_ROOT/usr/bin/gateway"
   [[ -f "$PACKAGE_BIN" ]] || fail "gateway binary not found in package root: $PACKAGE_BIN"
 }
@@ -435,7 +432,6 @@ wait_for_status() {
   local max_time_secs="${5:-3}"
   local url="http://127.0.0.1:${GATEWAY_PORT}${path}"
   local code=""
-
   for _ in $(seq 1 "$attempts"); do
     code="$(curl --max-time "$max_time_secs" -sS -o /dev/null -w "%{http_code}" -H "Host: $HOST_HEADER" "$url" || true)"
     if [[ "$code" == "$expected" ]]; then
@@ -444,7 +440,6 @@ wait_for_status() {
     fi
     sleep "$delay_secs"
   done
-
   printf '%s\n' "$code"
   return 1
 }
@@ -674,59 +669,10 @@ with open(output_path, "w", encoding="utf-8") as fp:
 PY
 }
 
-write_schema_outputs() {
-  "$PYTHON_BIN" - "$RESULT_PATH" "$SUMMARY_PATH" "$MODE" "$PROFILE" "$THRESHOLDS_FILE" \
-    "$THRESHOLD_AVAILABILITY" "$THRESHOLD_GATEWAY_5XX_RATIO_MAX" "$THRESHOLD_P95_MS" "$THRESHOLD_P99_MS" <<'PY'
-import json
-import sys
-
-result_path = sys.argv[1]
-summary_path = sys.argv[2]
-mode = sys.argv[3]
-profile = sys.argv[4]
-threshold_file = sys.argv[5]
-availability = float(sys.argv[6])
-gateway_ratio = float(sys.argv[7])
-p95 = float(sys.argv[8])
-p99 = float(sys.argv[9])
-
-result = {
-    "mode": mode,
-    "profile": profile,
-    "threshold_file": threshold_file,
-    "thresholds": {
-        "availability_min": availability,
-        "gateway_5xx_ratio_max": gateway_ratio,
-        "p95_ms_max": p95,
-        "p99_ms_max": p99,
-    },
-    "pass": True,
-    "message": "threshold schema and profile contract are valid",
-}
-
-with open(result_path, "w", encoding="utf-8") as fp:
-    json.dump(result, fp, ensure_ascii=False, indent=2)
-
-with open(summary_path, "w", encoding="utf-8") as fp:
-    fp.write("# Public API Gate Summary\n\n")
-    fp.write("## Mode\n\n")
-    fp.write(f"- mode: `{mode}`\n")
-    fp.write(f"- profile: `{profile}`\n")
-    fp.write(f"- threshold file: `{threshold_file}`\n\n")
-    fp.write("## Result\n\n")
-    fp.write("- schema-check passed\n")
-    fp.write(f"- availability >= `{availability}`\n")
-    fp.write(f"- gateway_5xx_ratio <= `{gateway_ratio}`\n")
-    fp.write(f"- p95 <= `{p95} ms`\n")
-    fp.write(f"- p99 <= `{p99} ms`\n")
-PY
-}
-
 prepare_runtime() {
   if [[ "$MODE" == "schema-check" ]]; then
     return 0
   fi
-
   render_gateway_config
   start_fixture_backend
   start_gateway
@@ -750,7 +696,6 @@ run_baseline_samples() {
     sample_paths+=("$sample_path")
     sleep 1
   done
-
   aggregate_sample_metrics "$summary_path" "${sample_paths[@]}"
   printf '%s\n' "$summary_path"
 }
@@ -766,7 +711,6 @@ run_soak_samples() {
     sample_paths+=("$sample_path")
     sleep 1
   done
-
   aggregate_sample_metrics "$summary_path" "${sample_paths[@]}"
   printf '%s\n' "$summary_path"
 }
@@ -779,9 +723,8 @@ run_failure_drill() {
   local backend_down_path="$RUNS_DIR/failure-backend-down.json"
   local recovery_status=""
 
-  # 先压一段上游业务 5xx，验证分类是否准确，不应被算进网关 5xx。
+  # 先验证上游业务 5xx 不应计入网关 5xx，再验证 timeout/reset/backend-down 的网关故障分类。
   run_load_probe "failure-business-503" "/fixture/status/503" "$FAILURE_DURATION_SECS" 8 "$business_path"
-  # 再压上游慢响应和连接重置，验证网关侧 5xx 的故障路径能被观测到。
   run_load_probe "failure-timeout" "/fixture/delay/2000" "$FAILURE_DURATION_SECS" 8 "$timeout_path"
   run_load_probe "failure-reset" "/fixture/reset" "$FAILURE_DURATION_SECS" 6 "$reset_path"
 
@@ -813,10 +756,7 @@ with open(reset_path, "r", encoding="utf-8") as fp:
 with open(backend_down_path, "r", encoding="utf-8") as fp:
     backend_down = json.load(fp)
 
-gateway_fault_5xx_total = (
-    timeout_case["gateway_5xx"] + reset_case["gateway_5xx"] + backend_down["gateway_5xx"]
-)
-
+gateway_fault_5xx_total = timeout_case["gateway_5xx"] + reset_case["gateway_5xx"] + backend_down["gateway_5xx"]
 summary = {
     "scenario": "failure-drill",
     "business_upstream_5xx": business["upstream_5xx"],
@@ -827,11 +767,7 @@ summary = {
     "gateway_faults_observed": gateway_fault_5xx_total > 0,
     "recovery_pass": recovery_status == "200",
 }
-summary["pass"] = (
-    summary["business_errors_are_upstream_only"]
-    and summary["gateway_faults_observed"]
-    and summary["recovery_pass"]
-)
+summary["pass"] = summary["business_errors_are_upstream_only"] and summary["gateway_faults_observed"] and summary["recovery_pass"]
 
 with open(summary_path, "w", encoding="utf-8") as fp:
     json.dump(summary, fp, ensure_ascii=False, indent=2)
@@ -840,11 +776,75 @@ PY
   printf '%s\n' "$summary_path"
 }
 
+write_schema_outputs() {
+  "$PYTHON_BIN" - "$RESULT_PATH" "$SUMMARY_PATH" "$MODE" "$PROFILE" "$RESOLVED_ARCH" "$THRESHOLDS_FILE" \
+    "$THRESHOLD_AVAILABILITY" "$THRESHOLD_GATEWAY_5XX_RATIO_MAX" "$THRESHOLD_P95_MS" "$THRESHOLD_P99_MS" \
+    "$THRESHOLD_MIN_TOTAL_REQUESTS_BASELINE" "$THRESHOLD_MIN_TOTAL_REQUESTS_SOAK" "$DURATION_PROFILE" "$LEGACY_FLAT_KEYS_PRESENT" <<'PY'
+import json
+import sys
+
+result_path = sys.argv[1]
+summary_path = sys.argv[2]
+mode = sys.argv[3]
+profile = sys.argv[4]
+arch = sys.argv[5]
+threshold_file = sys.argv[6]
+availability = float(sys.argv[7])
+gateway_ratio = float(sys.argv[8])
+p95 = float(sys.argv[9])
+p99 = float(sys.argv[10])
+min_baseline = int(sys.argv[11])
+min_soak = int(sys.argv[12])
+duration_profile = sys.argv[13]
+legacy_flat_keys_present = sys.argv[14].lower() == "true"
+
+result = {
+    "mode": mode,
+    "profile": profile,
+    "arch": arch,
+    "duration_profile": duration_profile,
+    "threshold_file": threshold_file,
+    "thresholds": {
+        "availability_min": availability,
+        "gateway_5xx_ratio_max": gateway_ratio,
+        "p95_ms_max": p95,
+        "p99_ms_max": p99,
+        "min_total_requests_baseline": min_baseline,
+        "min_total_requests_soak": min_soak,
+    },
+    "legacy_flat_keys_present": legacy_flat_keys_present,
+    "pass": True,
+    "message": "threshold schema and profile-arch contract are valid",
+}
+
+with open(result_path, "w", encoding="utf-8") as fp:
+    json.dump(result, fp, ensure_ascii=False, indent=2)
+
+with open(summary_path, "w", encoding="utf-8") as fp:
+    fp.write("# Public API Gate Summary\n\n")
+    fp.write("## Mode\n\n")
+    fp.write(f"- mode: `{mode}`\n")
+    fp.write(f"- profile: `{profile}`\n")
+    fp.write(f"- arch: `{arch}`\n")
+    fp.write(f"- duration_profile: `{duration_profile}`\n")
+    fp.write(f"- threshold file: `{threshold_file}`\n\n")
+    fp.write("## Result\n\n")
+    fp.write("- schema-check passed\n")
+    fp.write(f"- availability >= `{availability}`\n")
+    fp.write(f"- gateway_5xx_ratio <= `{gateway_ratio}`\n")
+    fp.write(f"- p95 <= `{p95} ms`\n")
+    fp.write(f"- p99 <= `{p99} ms`\n")
+    fp.write(f"- min_total_requests_baseline >= `{min_baseline}`\n")
+    fp.write(f"- min_total_requests_soak >= `{min_soak}`\n")
+PY
+}
+
 compose_single_mode_result() {
   local scenario="$1"
   local scenario_summary_json="$2"
-  "$PYTHON_BIN" - "$RESULT_PATH" "$SUMMARY_PATH" "$scenario" "$PROFILE" "$THRESHOLDS_FILE" \
-    "$THRESHOLD_AVAILABILITY" "$THRESHOLD_GATEWAY_5XX_RATIO_MAX" "$THRESHOLD_P95_MS" "$THRESHOLD_P99_MS" "$scenario_summary_json" <<'PY'
+  "$PYTHON_BIN" - "$RESULT_PATH" "$SUMMARY_PATH" "$scenario" "$PROFILE" "$RESOLVED_ARCH" "$THRESHOLDS_FILE" \
+    "$THRESHOLD_AVAILABILITY" "$THRESHOLD_GATEWAY_5XX_RATIO_MAX" "$THRESHOLD_P95_MS" "$THRESHOLD_P99_MS" \
+    "$THRESHOLD_MIN_TOTAL_REQUESTS_BASELINE" "$THRESHOLD_MIN_TOTAL_REQUESTS_SOAK" "$DURATION_PROFILE" "$scenario_summary_json" <<'PY'
 import json
 import sys
 
@@ -852,33 +852,50 @@ result_path = sys.argv[1]
 summary_path = sys.argv[2]
 scenario = sys.argv[3]
 profile = sys.argv[4]
-threshold_file = sys.argv[5]
-availability = float(sys.argv[6])
-gateway_ratio = float(sys.argv[7])
-p95 = float(sys.argv[8])
-p99 = float(sys.argv[9])
-scenario_summary_path = sys.argv[10]
+arch = sys.argv[5]
+threshold_file = sys.argv[6]
+availability = float(sys.argv[7])
+gateway_ratio = float(sys.argv[8])
+p95 = float(sys.argv[9])
+p99 = float(sys.argv[10])
+min_baseline = int(sys.argv[11])
+min_soak = int(sys.argv[12])
+duration_profile = sys.argv[13]
+scenario_summary_path = sys.argv[14]
 
 with open(scenario_summary_path, "r", encoding="utf-8") as fp:
     scenario_summary = json.load(fp)
 
+pass_value = True
+message = "single scenario report generated"
+if scenario == "baseline":
+    pass_value = scenario_summary.get("total_requests_sum", 0) >= min_baseline
+    message = "baseline request-floor check"
+elif scenario == "soak":
+    pass_value = scenario_summary.get("total_requests_sum", 0) >= min_soak
+    message = "soak request-floor check"
+elif scenario == "failure-drill":
+    pass_value = bool(scenario_summary.get("pass", False))
+    message = "failure drill classification and recovery checks"
+
 result = {
     "mode": scenario,
     "profile": profile,
+    "arch": arch,
+    "duration_profile": duration_profile,
     "threshold_file": threshold_file,
     "thresholds": {
         "availability_min": availability,
         "gateway_5xx_ratio_max": gateway_ratio,
         "p95_ms_max": p95,
         "p99_ms_max": p99,
+        "min_total_requests_baseline": min_baseline,
+        "min_total_requests_soak": min_soak,
     },
     "scenario_summary": scenario_summary,
-    "pass": True,
+    "pass": pass_value,
+    "message": message,
 }
-
-if scenario == "failure-drill":
-    result["pass"] = bool(scenario_summary.get("pass", False))
-    result["message"] = "failure drill classification and recovery checks"
 
 with open(result_path, "w", encoding="utf-8") as fp:
     json.dump(result, fp, ensure_ascii=False, indent=2)
@@ -887,6 +904,8 @@ with open(summary_path, "w", encoding="utf-8") as fp:
     fp.write("# Public API Gate Summary\n\n")
     fp.write(f"- mode: `{scenario}`\n")
     fp.write(f"- profile: `{profile}`\n")
+    fp.write(f"- arch: `{arch}`\n")
+    fp.write(f"- duration_profile: `{duration_profile}`\n")
     fp.write(f"- threshold file: `{threshold_file}`\n")
     fp.write(f"- result json: `{result_path}`\n\n")
     fp.write("## Scenario Summary\n\n")
@@ -900,26 +919,31 @@ compose_evaluate_result() {
   local baseline_summary="$1"
   local soak_summary="$2"
   local failure_summary="$3"
-  "$PYTHON_BIN" - "$RESULT_PATH" "$SUMMARY_PATH" "$PROFILE" "$THRESHOLDS_FILE" \
+  "$PYTHON_BIN" - "$RESULT_PATH" "$SUMMARY_PATH" "$PROFILE" "$RESOLVED_ARCH" "$THRESHOLDS_FILE" \
     "$THRESHOLD_AVAILABILITY" "$THRESHOLD_GATEWAY_5XX_RATIO_MAX" "$THRESHOLD_P95_MS" "$THRESHOLD_P99_MS" \
-    "$baseline_summary" "$soak_summary" "$failure_summary" "$MODE" "$ARTIFACT_PATH" "$FORMAT" <<'PY'
+    "$THRESHOLD_MIN_TOTAL_REQUESTS_BASELINE" "$THRESHOLD_MIN_TOTAL_REQUESTS_SOAK" "$baseline_summary" "$soak_summary" \
+    "$failure_summary" "$MODE" "$ARTIFACT_PATH" "$FORMAT" "$DURATION_PROFILE" <<'PY'
 import json
 import sys
 
 result_path = sys.argv[1]
 summary_path = sys.argv[2]
 profile = sys.argv[3]
-threshold_file = sys.argv[4]
-threshold_availability = float(sys.argv[5])
-threshold_gateway_ratio = float(sys.argv[6])
-threshold_p95 = float(sys.argv[7])
-threshold_p99 = float(sys.argv[8])
-baseline_path = sys.argv[9]
-soak_path = sys.argv[10]
-failure_path = sys.argv[11]
-mode = sys.argv[12]
-artifact_path = sys.argv[13]
-artifact_format = sys.argv[14]
+arch = sys.argv[4]
+threshold_file = sys.argv[5]
+threshold_availability = float(sys.argv[6])
+threshold_gateway_ratio = float(sys.argv[7])
+threshold_p95 = float(sys.argv[8])
+threshold_p99 = float(sys.argv[9])
+threshold_min_requests_baseline = int(sys.argv[10])
+threshold_min_requests_soak = int(sys.argv[11])
+baseline_path = sys.argv[12]
+soak_path = sys.argv[13]
+failure_path = sys.argv[14]
+mode = sys.argv[15]
+artifact_path = sys.argv[16]
+artifact_format = sys.argv[17]
+duration_profile = sys.argv[18]
 
 with open(baseline_path, "r", encoding="utf-8") as fp:
     baseline = json.load(fp)
@@ -933,21 +957,50 @@ observed_gateway_ratio = max(baseline["gateway_5xx_ratio_median"], soak["gateway
 observed_p95 = max(baseline["p95_ms_median"], soak["p95_ms_median"])
 observed_p99 = max(baseline["p99_ms_median"], soak["p99_ms_median"])
 
-would_pass = (
-    observed_availability >= threshold_availability
-    and observed_gateway_ratio <= threshold_gateway_ratio
-    and observed_p95 <= threshold_p95
-    and observed_p99 <= threshold_p99
-    and failure.get("pass", False)
-)
+request_floor_checks = {
+    "baseline": {
+        "minimum": threshold_min_requests_baseline,
+        "observed": int(baseline["total_requests_sum"]),
+        "pass": int(baseline["total_requests_sum"]) >= threshold_min_requests_baseline,
+    },
+    "soak": {
+        "minimum": threshold_min_requests_soak,
+        "observed": int(soak["total_requests_sum"]),
+        "pass": int(soak["total_requests_sum"]) >= threshold_min_requests_soak,
+    },
+}
+threshold_checks = {
+    "availability": observed_availability >= threshold_availability,
+    "gateway_5xx_ratio": observed_gateway_ratio <= threshold_gateway_ratio,
+    "p95_ms": observed_p95 <= threshold_p95,
+    "p99_ms": observed_p99 <= threshold_p99,
+    "failure_drill": bool(failure.get("pass", False)),
+}
+failure_reasons = []
+if not request_floor_checks["baseline"]["pass"]:
+    failure_reasons.append("insufficient_baseline_requests")
+if not request_floor_checks["soak"]["pass"]:
+    failure_reasons.append("insufficient_soak_requests")
+if not threshold_checks["availability"]:
+    failure_reasons.append("availability_below_threshold")
+if not threshold_checks["gateway_5xx_ratio"]:
+    failure_reasons.append("gateway_5xx_ratio_above_threshold")
+if not threshold_checks["p95_ms"]:
+    failure_reasons.append("p95_above_threshold")
+if not threshold_checks["p99_ms"]:
+    failure_reasons.append("p99_above_threshold")
+if not threshold_checks["failure_drill"]:
+    failure_reasons.append("failure_drill_not_passed")
 
-# observe 档用于“产出报告不阻断”，因此保留 would_pass，同时把 gate pass 固定为 true。
+would_pass = len(failure_reasons) == 0
 blocking = profile != "observe"
 gate_pass = would_pass if blocking else True
 
 result = {
     "mode": mode,
     "profile": profile,
+    "arch": arch,
+    "duration_profile": duration_profile,
     "artifact": {
         "path": artifact_path,
         "format": artifact_format,
@@ -958,6 +1011,8 @@ result = {
         "gateway_5xx_ratio_max": threshold_gateway_ratio,
         "p95_ms_max": threshold_p95,
         "p99_ms_max": threshold_p99,
+        "min_total_requests_baseline": threshold_min_requests_baseline,
+        "min_total_requests_soak": threshold_min_requests_soak,
     },
     "scenarios": {
         "baseline": baseline,
@@ -971,6 +1026,9 @@ result = {
         "p99_ms": round(observed_p99, 3),
         "failure_drill_pass": bool(failure.get("pass", False)),
     },
+    "request_floor_checks": request_floor_checks,
+    "threshold_checks": threshold_checks,
+    "failure_reasons": failure_reasons,
     "blocking_profile": blocking,
     "would_pass": would_pass,
     "pass": gate_pass,
@@ -984,27 +1042,23 @@ with open(summary_path, "w", encoding="utf-8") as fp:
     fp.write("## Inputs\n\n")
     fp.write(f"- mode: `{mode}`\n")
     fp.write(f"- profile: `{profile}`\n")
+    fp.write(f"- arch: `{arch}`\n")
+    fp.write(f"- duration_profile: `{duration_profile}`\n")
     fp.write(f"- artifact: `{artifact_path}`\n")
     fp.write(f"- format: `{artifact_format}`\n")
     fp.write(f"- threshold file: `{threshold_file}`\n\n")
-    fp.write("## Thresholds\n\n")
-    fp.write(f"- availability >= `{threshold_availability}`\n")
-    fp.write(f"- gateway_5xx_ratio <= `{threshold_gateway_ratio}`\n")
-    fp.write(f"- p95 <= `{threshold_p95} ms`\n")
-    fp.write(f"- p99 <= `{threshold_p99} ms`\n\n")
     fp.write("## Observed\n\n")
     fp.write(f"- availability: `{round(observed_availability, 6)}`\n")
     fp.write(f"- gateway_5xx_ratio: `{round(observed_gateway_ratio, 6)}`\n")
     fp.write(f"- p95: `{round(observed_p95, 3)} ms`\n")
     fp.write(f"- p99: `{round(observed_p99, 3)} ms`\n")
     fp.write(f"- failure_drill_pass: `{bool(failure.get('pass', False))}`\n")
-    fp.write(f"- blocking profile: `{blocking}`\n")
+    fp.write(f"- baseline request floor: `{request_floor_checks['baseline']['observed']}/{request_floor_checks['baseline']['minimum']}`\n")
+    fp.write(f"- soak request floor: `{request_floor_checks['soak']['observed']}/{request_floor_checks['soak']['minimum']}`\n")
     fp.write(f"- would_pass: `{would_pass}`\n")
-    fp.write(f"- pass: `{gate_pass}`\n\n")
-    fp.write("## Scenario Files\n\n")
-    fp.write(f"- baseline summary: `{baseline_path}`\n")
-    fp.write(f"- soak summary: `{soak_path}`\n")
-    fp.write(f"- failure summary: `{failure_path}`\n")
+    fp.write(f"- pass: `{gate_pass}`\n")
+    if failure_reasons:
+        fp.write(f"- failure_reasons: `{', '.join(failure_reasons)}`\n")
 PY
 }
 
@@ -1012,7 +1066,6 @@ run_mode() {
   local baseline_summary=""
   local soak_summary=""
   local failure_summary=""
-
   case "$MODE" in
     schema-check)
       write_schema_outputs
@@ -1049,6 +1102,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --profile)
       PROFILE="$2"
+      shift 2
+      ;;
+    --arch)
+      TARGET_ARCH="$2"
       shift 2
       ;;
     --threshold-file)
@@ -1107,6 +1164,7 @@ esac
 
 resolve_mode_dependencies
 resolve_python_bin
+resolve_target_arch
 resolve_output_layout
 load_threshold_profile "$THRESHOLDS_FILE"
 resolve_artifact
@@ -1115,7 +1173,7 @@ prepare_runtime
 
 run_mode
 
-print_stage "public api gate mode=$MODE profile=$PROFILE completed"
+print_stage "public api gate mode=$MODE profile=$PROFILE arch=$RESOLVED_ARCH completed"
 echo "result: $RESULT_PATH"
 echo "summary: $SUMMARY_PATH"
 
@@ -1129,7 +1187,7 @@ print("true" if result.get("pass") else "false")
 PY
 )"
   if [[ "$gate_pass" != "true" ]]; then
-    fail "public-api gate did not pass for profile=$PROFILE"
+    fail "public-api gate did not pass for profile=$PROFILE arch=$RESOLVED_ARCH"
   fi
 fi
 
