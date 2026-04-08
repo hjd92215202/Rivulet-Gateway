@@ -1,75 +1,261 @@
 //! runtime 层负责把配置、代理和后台任务真正装配起来。
 //! 它不关心某次请求具体怎么转发，只关心“系统如何活起来并稳定运行”。
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gateway_admin::{
-    AdminListener, AdminOverview, AdminOverviewProvider, AdminRoute, AdminRuntime, AdminService,
-    AdminStats, AdminSummary, AdminUpstream,
+    AdminListener, AdminOverview, AdminOverviewProvider, AdminReloadHandler, AdminReloadResult,
+    AdminRoute, AdminRuntime, AdminService, AdminStats, AdminSummary, AdminUpstream,
 };
-use gateway_config::{GatewayConfigFile, ListenerTlsConfig, TlsMinVersionConfig};
+use gateway_config::{GatewayConfigFile, ListenerTlsConfig, ProtocolConfig, TlsMinVersionConfig};
 use gateway_observability::{AccessLogRecord, RuntimeStats, RuntimeStatsSnapshot, emit_access_log};
 use gateway_proxy::{ProxyService, is_graceful_downstream_close, status_code_for_error};
 use gateway_router::Router;
-use gateway_types::{GatewayError, RequestContext, ResponseContext, Result, Shared};
+use gateway_types::{
+    GatewayError, RequestContext, ResponseContext, Result, RuntimeSettings, Shared,
+};
 use gateway_upstream::{UpstreamRegistry, probe_endpoint};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 
-pub struct GatewayApp {
-    /// 原始配置快照，供摘要输出和后台任务读取。
+#[derive(Clone)]
+struct ListenerRuntimeInfo {
+    tls_acceptor: Option<TlsAcceptor>,
+}
+
+impl ListenerRuntimeInfo {
+    fn tls_enabled(&self) -> bool {
+        self.tls_acceptor.is_some()
+    }
+}
+
+struct GatewayEpoch {
     config: GatewayConfigFile,
-    /// 负责真正处理请求转发的代理服务。
+    runtime_settings: RuntimeSettings,
     proxy: ProxyService,
-    /// 所有 upstream 集群及其运行时状态。
     upstreams: UpstreamRegistry,
+    listener_runtime: HashMap<String, ListenerRuntimeInfo>,
+}
+
+impl GatewayEpoch {
+    fn listener_runtime(&self, listener_name: &str) -> ListenerRuntimeInfo {
+        self.listener_runtime
+            .get(listener_name)
+            .cloned()
+            .unwrap_or(ListenerRuntimeInfo { tls_acceptor: None })
+    }
+}
+
+struct ReloadState {
+    epoch: Arc<GatewayEpoch>,
+    config_version: u64,
+    last_reload_result: String,
+    last_reload_at: Option<String>,
+}
+
+#[derive(Clone)]
+struct ReloadRuntimeSnapshot {
+    config_version: u64,
+    last_reload_result: String,
+    last_reload_at: Option<String>,
+}
+
+struct ReloadCoordinator {
+    config_path: Option<PathBuf>,
+    state: RwLock<ReloadState>,
+    admin_service: RwLock<Option<AdminService>>,
+}
+
+pub struct GatewayApp {
+    reload: Arc<ReloadCoordinator>,
     /// 全局运行时指标。
     stats: Shared<RuntimeStats>,
 }
 
+impl ReloadCoordinator {
+    fn new(initial_epoch: GatewayEpoch, config_path: Option<PathBuf>) -> Self {
+        Self {
+            config_path,
+            state: RwLock::new(ReloadState {
+                epoch: Arc::new(initial_epoch),
+                config_version: 1,
+                last_reload_result: "bootstrap".into(),
+                last_reload_at: Some(now_unix_timestamp_string()),
+            }),
+            admin_service: RwLock::new(None),
+        }
+    }
+
+    fn bind_admin_service(&self, admin: AdminService) {
+        *self
+            .admin_service
+            .write()
+            .expect("reload admin service lock poisoned") = Some(admin);
+    }
+
+    fn install_epoch(&self, epoch: GatewayEpoch) {
+        self.state
+            .write()
+            .expect("reload state lock poisoned")
+            .epoch = Arc::new(epoch);
+    }
+
+    fn current_epoch(&self) -> Arc<GatewayEpoch> {
+        self.state
+            .read()
+            .expect("reload state lock poisoned")
+            .epoch
+            .clone()
+    }
+
+    fn config_version(&self) -> u64 {
+        self.state
+            .read()
+            .expect("reload state lock poisoned")
+            .config_version
+    }
+
+    fn runtime_snapshot(&self) -> ReloadRuntimeSnapshot {
+        let state = self.state.read().expect("reload state lock poisoned");
+        ReloadRuntimeSnapshot {
+            config_version: state.config_version,
+            last_reload_result: state.last_reload_result.clone(),
+            last_reload_at: state.last_reload_at.clone(),
+        }
+    }
+
+    fn reload(&self) -> AdminReloadResult {
+        let config_path = match &self.config_path {
+            Some(path) => path.clone(),
+            None => {
+                return self.record_reload_failure(
+                    "reload requires a concrete config file path at bootstrap".into(),
+                );
+            }
+        };
+
+        let loaded = match GatewayConfigFile::load_from_file(&config_path) {
+            Ok(config) => config,
+            Err(error) => return self.record_reload_failure(error.to_string()),
+        };
+        if let Err(error) = loaded.validate() {
+            return self.record_reload_failure(error.to_string());
+        }
+
+        let current = self.current_epoch();
+        if let Err(error) = ensure_static_listener_shape(&current.config, &loaded) {
+            return self.record_reload_failure(error.to_string());
+        }
+
+        let admin = self
+            .admin_service
+            .read()
+            .expect("reload admin service lock poisoned")
+            .clone();
+        let new_epoch = match build_gateway_epoch(loaded, admin) {
+            Ok(epoch) => epoch,
+            Err(error) => return self.record_reload_failure(error.to_string()),
+        };
+
+        let mut state = self.state.write().expect("reload state lock poisoned");
+        let from_version = state.config_version;
+        state.config_version += 1;
+        let to_version = state.config_version;
+        state.epoch = Arc::new(new_epoch);
+        state.last_reload_result = "success".into();
+        state.last_reload_at = Some(now_unix_timestamp_string());
+        let timestamp = state
+            .last_reload_at
+            .clone()
+            .unwrap_or_else(|| "unknown".into());
+        drop(state);
+
+        emit_reload_event(
+            "success",
+            from_version,
+            to_version,
+            "reload applied",
+            &timestamp,
+        );
+        AdminReloadResult {
+            accepted: true,
+            reload_result: "success".into(),
+            config_version: to_version,
+            message: "reload applied".into(),
+        }
+    }
+
+    fn record_reload_failure(&self, message: String) -> AdminReloadResult {
+        let mut state = self.state.write().expect("reload state lock poisoned");
+        let version = state.config_version;
+        state.last_reload_result = "failed".into();
+        state.last_reload_at = Some(now_unix_timestamp_string());
+        let timestamp = state
+            .last_reload_at
+            .clone()
+            .unwrap_or_else(|| "unknown".into());
+        drop(state);
+
+        emit_reload_event("failed", version, version, &message, &timestamp);
+        AdminReloadResult {
+            accepted: false,
+            reload_result: "failed".into(),
+            config_version: version,
+            message,
+        }
+    }
+}
+
 impl GatewayApp {
     pub fn from_config(config: GatewayConfigFile) -> Self {
-        // 配置在这里一次性装配成运行时对象，避免主逻辑里反复解析和构造。
-        let router = Router::from_config(&config);
-        let filters = gateway_filters::FilterRegistry::with_defaults();
-        let upstreams = UpstreamRegistry::from_config(&config);
-        let runtime_settings = config.runtime_settings();
-        let stats = Arc::new(RuntimeStats::default());
-        let admin = AdminService::new(Arc::new(RuntimeAdminOverviewProvider {
-            config: config.clone(),
-            stats: Arc::clone(&stats),
-        }));
+        Self::try_from_config(config, None)
+            .expect("from_config should succeed for in-memory test bootstrap")
+    }
 
-        Self {
-            config,
-            proxy: ProxyService::with_admin(
-                router,
-                filters,
-                upstreams.clone(),
-                runtime_settings,
-                Some(admin),
-            ),
-            upstreams,
-            stats,
-        }
+    pub fn try_from_config(
+        config: GatewayConfigFile,
+        config_path: Option<PathBuf>,
+    ) -> Result<Self> {
+        let stats = Arc::new(RuntimeStats::default());
+        let initial_epoch = build_gateway_epoch(config, None)?;
+        let reload = Arc::new(ReloadCoordinator::new(initial_epoch, config_path));
+
+        let provider = Arc::new(RuntimeAdminOverviewProvider {
+            reload: Arc::clone(&reload),
+            stats: Arc::clone(&stats),
+        });
+        let reloader = Arc::new(RuntimeAdminReloadHandler {
+            reload: Arc::clone(&reload),
+        });
+        let admin = AdminService::new(provider, Some(reloader));
+        reload.bind_admin_service(admin.clone());
+
+        let boot_config = reload.current_epoch().config.clone();
+        let epoch_with_admin = build_gateway_epoch(boot_config, Some(admin))?;
+        reload.install_epoch(epoch_with_admin);
+
+        Ok(Self { reload, stats })
     }
 
     pub async fn handle(&self, request: RequestContext) -> Result<ResponseContext> {
         self.stats.record_request_started();
-        self.proxy.handle(request).await
+        self.reload.current_epoch().proxy.handle(request).await
     }
 
     pub fn summary(&self) -> GatewaySummary {
+        let epoch = self.reload.current_epoch();
         GatewaySummary {
-            listeners: self.config.listeners.len(),
-            routes: self.config.routes.len(),
-            upstreams: self.config.upstreams.len(),
-            worker_threads: self.config.runtime.worker_threads,
+            listeners: epoch.config.listeners.len(),
+            routes: epoch.config.routes.len(),
+            upstreams: epoch.config.upstreams.len(),
+            worker_threads: epoch.config.runtime.worker_threads,
         }
     }
 
@@ -88,19 +274,23 @@ impl GatewayApp {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut handles = Vec::new();
 
-        for cluster in shared.upstreams.clusters() {
-            if cluster.health_check.is_some() {
-                // 每个启用主动探活的集群独立起一个后台任务。
-                let app = Arc::clone(&shared);
-                let cluster_name = cluster.name.clone();
-                let cluster_shutdown = shutdown_rx.clone();
-                handles.push(tokio::spawn(async move {
-                    health_check_loop(app, cluster_name, cluster_shutdown).await
-                }));
-            }
+        let health_shutdown = shutdown_rx.clone();
+        let health_app = Arc::clone(&shared);
+        handles.push(tokio::spawn(async move {
+            health_check_supervisor(health_app, health_shutdown).await
+        }));
+
+        #[cfg(unix)]
+        {
+            let signal_shutdown = shutdown_rx.clone();
+            let signal_app = Arc::clone(&shared);
+            handles.push(tokio::spawn(async move {
+                sighup_reload_loop(signal_app, signal_shutdown).await
+            }));
         }
 
-        for listener in shared.config.listeners.clone() {
+        let boot_epoch = shared.reload.current_epoch();
+        for listener in boot_epoch.config.listeners.clone() {
             // listener 在启动阶段先完成 bind，尽早发现端口冲突等问题。
             let tcp_listener = TcpListener::bind(&listener.address)
                 .await
@@ -108,11 +298,6 @@ impl GatewayApp {
             let app = Arc::clone(&shared);
             let listener_name = listener.name.clone();
             let listener_address = listener.address.clone();
-            let tls_acceptor = listener
-                .tls
-                .as_ref()
-                .map(|tls| build_tls_acceptor(&listener_name, tls))
-                .transpose()?;
             let listener_shutdown = shutdown_rx.clone();
             handles.push(tokio::spawn(async move {
                 listener_loop(
@@ -120,7 +305,6 @@ impl GatewayApp {
                     tcp_listener,
                     listener_name,
                     listener_address,
-                    tls_acceptor,
                     listener_shutdown,
                 )
                 .await
@@ -139,34 +323,36 @@ impl GatewayApp {
         }
 
         // 后台任务停掉后，再等待在途连接自然排空。
-        wait_for_connection_drain(
-            Arc::clone(&shared),
-            shared.config.runtime_settings().graceful_shutdown,
-        )
-        .await;
+        let graceful = shared
+            .reload
+            .current_epoch()
+            .runtime_settings
+            .graceful_shutdown;
+        wait_for_connection_drain(Arc::clone(&shared), graceful).await;
 
         Ok(())
     }
 }
 
 struct RuntimeAdminOverviewProvider {
-    /// 管理面读取的是启动时生效的配置快照，而不是外部可变状态。
-    config: GatewayConfigFile,
+    reload: Arc<ReloadCoordinator>,
     /// 指标通过原子快照读取，保证管理面只读且不会反向影响主链路。
     stats: Shared<RuntimeStats>,
 }
 
 impl AdminOverviewProvider for RuntimeAdminOverviewProvider {
     fn overview(&self) -> AdminOverview {
+        let epoch = self.reload.current_epoch();
+        let reload = self.reload.runtime_snapshot();
         let stats = self.stats.snapshot();
-        let runtime = self.config.runtime_settings();
+        let runtime = epoch.config.runtime_settings();
 
         AdminOverview {
             summary: AdminSummary {
-                listeners: self.config.listeners.len(),
-                routes: self.config.routes.len(),
-                upstreams: self.config.upstreams.len(),
-                worker_threads: self.config.runtime.worker_threads,
+                listeners: epoch.config.listeners.len(),
+                routes: epoch.config.routes.len(),
+                upstreams: epoch.config.upstreams.len(),
+                worker_threads: epoch.config.runtime.worker_threads,
             },
             runtime: AdminRuntime {
                 graceful_shutdown_secs: runtime.graceful_shutdown.as_secs(),
@@ -179,6 +365,9 @@ impl AdminOverviewProvider for RuntimeAdminOverviewProvider {
                 upstream_read_timeout_ms: runtime.upstream_read_timeout.as_millis(),
                 upstream_retry_attempts: runtime.upstream_retry_attempts,
                 upstream_idle_pool_size: runtime.upstream_idle_pool_size,
+                config_version: reload.config_version,
+                last_reload_result: reload.last_reload_result,
+                last_reload_at: reload.last_reload_at,
             },
             stats: AdminStats {
                 total_requests: stats.total_requests,
@@ -189,7 +378,7 @@ impl AdminOverviewProvider for RuntimeAdminOverviewProvider {
                 server_error_responses: stats.server_error_responses,
                 upstream_retries: stats.upstream_retries,
             },
-            listeners: self
+            listeners: epoch
                 .config
                 .listeners
                 .iter()
@@ -199,7 +388,7 @@ impl AdminOverviewProvider for RuntimeAdminOverviewProvider {
                     protocol: listener.protocol.as_str().to_string(),
                 })
                 .collect(),
-            routes: self
+            routes: epoch
                 .config
                 .routes
                 .iter()
@@ -212,7 +401,7 @@ impl AdminOverviewProvider for RuntimeAdminOverviewProvider {
                     upstream: route.upstream.clone(),
                 })
                 .collect(),
-            upstreams: self
+            upstreams: epoch
                 .config
                 .upstreams
                 .iter()
@@ -230,6 +419,16 @@ impl AdminOverviewProvider for RuntimeAdminOverviewProvider {
     }
 }
 
+struct RuntimeAdminReloadHandler {
+    reload: Arc<ReloadCoordinator>,
+}
+
+impl AdminReloadHandler for RuntimeAdminReloadHandler {
+    fn reload(&self) -> AdminReloadResult {
+        self.reload.reload()
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct GatewaySummary {
     /// listener 数量。
@@ -240,6 +439,140 @@ pub struct GatewaySummary {
     pub upstreams: usize,
     /// worker 线程数量。
     pub worker_threads: usize,
+}
+
+fn build_gateway_epoch(
+    config: GatewayConfigFile,
+    admin: Option<AdminService>,
+) -> Result<GatewayEpoch> {
+    let router = Router::from_config(&config);
+    let filters = gateway_filters::FilterRegistry::with_defaults();
+    let upstreams = UpstreamRegistry::from_config(&config);
+    let runtime_settings = config.runtime_settings();
+    let proxy = ProxyService::with_admin(
+        router,
+        filters,
+        upstreams.clone(),
+        runtime_settings.clone(),
+        admin,
+    );
+
+    let mut listener_runtime = HashMap::new();
+    for listener in &config.listeners {
+        let info = ListenerRuntimeInfo {
+            tls_acceptor: listener
+                .tls
+                .as_ref()
+                .map(|tls| build_tls_acceptor(&listener.name, tls))
+                .transpose()?,
+        };
+        if listener_runtime
+            .insert(listener.name.clone(), info)
+            .is_some()
+        {
+            return Err(GatewayError::InvalidConfig(format!(
+                "duplicate listener name {}",
+                listener.name
+            )));
+        }
+    }
+
+    Ok(GatewayEpoch {
+        config,
+        runtime_settings,
+        proxy,
+        upstreams,
+        listener_runtime,
+    })
+}
+
+fn ensure_static_listener_shape(
+    current: &GatewayConfigFile,
+    candidate: &GatewayConfigFile,
+) -> Result<()> {
+    let current_shape: HashMap<&str, (&str, ProtocolConfig)> = current
+        .listeners
+        .iter()
+        .map(|listener| {
+            (
+                listener.name.as_str(),
+                (listener.address.as_str(), listener.protocol),
+            )
+        })
+        .collect();
+    let candidate_shape: HashMap<&str, (&str, ProtocolConfig)> = candidate
+        .listeners
+        .iter()
+        .map(|listener| {
+            (
+                listener.name.as_str(),
+                (listener.address.as_str(), listener.protocol),
+            )
+        })
+        .collect();
+
+    if current_shape.len() != candidate_shape.len() {
+        return Err(GatewayError::InvalidConfig(
+            "listener shape changed and requires restart".into(),
+        ));
+    }
+
+    for (name, (address, protocol)) in current_shape {
+        let Some((candidate_address, candidate_protocol)) = candidate_shape.get(name) else {
+            return Err(GatewayError::InvalidConfig(format!(
+                "listener {} shape changed and requires restart",
+                name
+            )));
+        };
+
+        if address != *candidate_address || protocol != *candidate_protocol {
+            return Err(GatewayError::InvalidConfig(format!(
+                "listener {} address/protocol changed and requires restart",
+                name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn now_unix_timestamp_string() -> String {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs().to_string(),
+        Err(_) => "0".into(),
+    }
+}
+
+fn emit_reload_event(
+    reload_result: &str,
+    from_version: u64,
+    to_version: u64,
+    reason: &str,
+    timestamp: &str,
+) {
+    println!(
+        "{{\"event\":\"reload\",\"reload_result\":\"{}\",\"from_version\":{},\"to_version\":{},\"reason\":\"{}\",\"at\":\"{}\"}}",
+        escape_json(reload_result),
+        from_version,
+        to_version,
+        escape_json(reason),
+        escape_json(timestamp),
+    );
+}
+
+fn escape_json(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 fn build_tls_acceptor(listener_name: &str, tls: &ListenerTlsConfig) -> Result<TlsAcceptor> {
@@ -310,7 +643,6 @@ async fn listener_loop(
     listener: TcpListener,
     listener_name: String,
     listener_address: String,
-    tls_acceptor: Option<TlsAcceptor>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
@@ -325,11 +657,12 @@ async fn listener_loop(
                     .map_err(|err| GatewayError::Io(format!("accept on {}: {}", listener_address, err)))?;
                 let app = Arc::clone(&app);
                 let listener_name = listener_name.clone();
-                let tls_acceptor = tls_acceptor.clone();
                 tokio::spawn(async move {
                     app.stats.record_connection_opened();
+                    let listener_runtime = app.reload.current_epoch().listener_runtime(&listener_name);
+                    let tls_enabled = listener_runtime.tls_enabled();
 
-                    if let Some(tls_acceptor) = tls_acceptor {
+                    if let Some(tls_acceptor) = listener_runtime.tls_acceptor {
                         // TLS 终止只负责把连接解包为安全的明文流，后续请求处理语义与明文入口完全复用。
                         match tls_acceptor.accept(stream).await {
                             Ok(mut tls_stream) => {
@@ -337,6 +670,7 @@ async fn listener_loop(
                                     app.clone(),
                                     listener_name.clone(),
                                     client_addr,
+                                    tls_enabled,
                                     &mut tls_stream,
                                 )
                                 .await;
@@ -350,14 +684,20 @@ async fn listener_loop(
                                 }
                             }
                             Err(err) => {
-                                emit_access_log(&AccessLogRecord::failure(
+                                let record = AccessLogRecord::failure(
                                     listener_name.clone(),
                                     None,
                                     400,
                                     0,
                                     0,
                                     format!("tls handshake failed: {}", err),
-                                ));
+                                )
+                                .with_runtime(
+                                    app.reload.config_version(),
+                                    true,
+                                    Some(listener_name.as_str()),
+                                );
+                                emit_access_log(&record);
                             }
                         }
                     } else {
@@ -366,6 +706,7 @@ async fn listener_loop(
                             app.clone(),
                             listener_name.clone(),
                             client_addr,
+                            false,
                             &mut stream,
                         )
                         .await;
@@ -384,23 +725,31 @@ async fn handle_client_stream<S>(
     app: Arc<GatewayApp>,
     listener_name: String,
     client_addr: std::net::SocketAddr,
+    tls_enabled: bool,
     stream: &mut S,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let runtime = app.config.runtime_settings();
     let mut handled_requests = 0_usize;
 
     loop {
+        let epoch = app.reload.current_epoch();
+        let runtime = epoch.runtime_settings.clone();
         // 限制单连接最大请求数，避免极端长连接占用资源过久。
         if handled_requests >= runtime.downstream_keepalive_max_requests {
             break;
         }
         let started_at = Instant::now();
+        let config_version = app.reload.config_version();
+        let tls_listener = if tls_enabled {
+            Some(listener_name.as_str())
+        } else {
+            None
+        };
 
         // 单个请求失败不应该把整个 listener 打穿，
         // 所以这里把错误就地转换成 HTTP 响应返回给客户端。
-        match app
+        match epoch
             .proxy
             .handle_connection(&listener_name, stream, client_addr)
             .await
@@ -411,12 +760,14 @@ async fn handle_client_stream<S>(
                 app.stats
                     .record_request_completed(completed.response.status_code);
                 app.stats.record_retries(completed.retries);
-                emit_access_log(&AccessLogRecord::success(
+                let record = AccessLogRecord::success(
                     &completed.request,
                     &completed.response,
                     started_at.elapsed().as_millis(),
                     completed.retries,
-                ));
+                )
+                .with_runtime(config_version, tls_enabled, tls_listener);
+                emit_access_log(&record);
 
                 if completed.close_downstream {
                     break;
@@ -432,14 +783,16 @@ async fn handle_client_stream<S>(
                 let status_code = status_code_for_error(&error.error);
                 app.stats.record_request_completed(status_code);
                 app.stats.record_retries(error.retries);
-                emit_access_log(&AccessLogRecord::failure(
+                let record = AccessLogRecord::failure(
                     listener_name.clone(),
                     error.request.as_ref(),
                     status_code,
                     started_at.elapsed().as_millis(),
                     error.retries,
                     error.error.to_string(),
-                ));
+                )
+                .with_runtime(config_version, tls_enabled, tls_listener);
+                emit_access_log(&record);
 
                 let response = gateway_proxy::error_response(&error.error);
                 let _ = stream.write_all(&response).await;
@@ -450,31 +803,68 @@ async fn handle_client_stream<S>(
     }
 }
 
-async fn health_check_loop(
+async fn health_check_supervisor(
     app: Arc<GatewayApp>,
-    cluster_name: String,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    // 先拿到集群和健康检查配置，后续循环只读使用。
-    let cluster = app.upstreams.cluster(&cluster_name)?.clone();
-    let config = cluster.health_check.clone().ok_or_else(|| {
-        GatewayError::InvalidConfig(format!("cluster {} missing health config", cluster_name))
-    })?;
-    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(config.interval_ms));
+    let mut next_probe_at = HashMap::<String, Instant>::new();
 
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
                 match changed {
-                    // 收到停止信号后退出探测循环。
                     Ok(_) | Err(_) => break,
                 }
             }
-            _ = ticker.tick() => {
-                // 健康检查目前串行执行，先用更简单、可预测的行为换取可维护性。
-                for endpoint in cluster.endpoints() {
-                    // 单个 endpoint 的探测失败不会影响其他节点继续探测。
-                    let _ = probe_endpoint(endpoint.as_ref(), &config).await;
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                let now = Instant::now();
+                let epoch = app.reload.current_epoch();
+
+                for cluster in epoch.upstreams.clusters() {
+                    let Some(config) = cluster.health_check.as_ref() else {
+                        continue;
+                    };
+                    let entry = next_probe_at.entry(cluster.name.clone()).or_insert(now);
+                    if *entry > now {
+                        continue;
+                    }
+
+                    for endpoint in cluster.endpoints() {
+                        let _ = probe_endpoint(endpoint.as_ref(), config).await;
+                    }
+                    *entry = now + Duration::from_millis(config.interval_ms);
+                }
+
+                next_probe_at.retain(|cluster_name, _| epoch.upstreams.cluster(cluster_name).is_ok());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn sighup_reload_loop(
+    app: Arc<GatewayApp>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sighup = signal(SignalKind::hangup())
+        .map_err(|err| GatewayError::Io(format!("watch sighup: {}", err)))?;
+
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                match changed {
+                    Ok(_) | Err(_) => break,
+                }
+            }
+            received = sighup.recv() => {
+                if received.is_some() {
+                    let _ = app.reload.reload();
+                } else {
+                    break;
                 }
             }
         }
@@ -1279,13 +1669,10 @@ mod tests {
             }],
         };
 
-        let app = GatewayApp::from_config(config);
-        let error = app
-            .run_until(async {
-                sleep(Duration::from_millis(5)).await;
-            })
-            .await
-            .expect_err("tls missing file should fail");
+        let error = match GatewayApp::try_from_config(config, None) {
+            Ok(_) => panic!("tls missing file should fail"),
+            Err(error) => error,
+        };
         match error {
             GatewayError::InvalidConfig(message) => assert!(message.contains("cert_file")),
             other => panic!("unexpected error: {:?}", other),
@@ -1335,13 +1722,10 @@ mod tests {
             }],
         };
 
-        let app = GatewayApp::from_config(config);
-        let error = app
-            .run_until(async {
-                sleep(Duration::from_millis(5)).await;
-            })
-            .await
-            .expect_err("tls cert/key mismatch should fail");
+        let error = match GatewayApp::try_from_config(config, None) {
+            Ok(_) => panic!("tls cert/key mismatch should fail"),
+            Err(error) => error,
+        };
         match error {
             GatewayError::InvalidConfig(message) => assert!(message.contains("cert/key")),
             other => panic!("unexpected error: {:?}", other),
@@ -1457,6 +1841,132 @@ mod tests {
         let _ = fs::remove_file(key_path);
     }
 
+    #[tokio::test]
+    async fn run_until_admin_reload_endpoint_applies_config_and_bumps_version() {
+        let listener_port = reserve_port();
+        let backend_port = reserve_port();
+        let backend_addr = format!("127.0.0.1:{backend_port}");
+        let config_path = std::env::temp_dir().join(format!(
+            "rivulet-reload-success-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+
+        write_reload_test_config(
+            &config_path,
+            &format!("127.0.0.1:{listener_port}"),
+            &backend_addr,
+            4000,
+        );
+        let config = GatewayConfigFile::load_from_file(&config_path).expect("load config");
+        let app = GatewayApp::try_from_config(config, Some(config_path.clone()))
+            .expect("bootstrap app with reload path");
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(450)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(40)).await;
+
+        let overview_before = send_admin_request(
+            listener_port,
+            b"GET /__admin/api/overview HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
+        assert!(overview_before.contains("\"config_version\":1"));
+        assert!(overview_before.contains("\"upstream_read_timeout_ms\":4000"));
+
+        write_reload_test_config(
+            &config_path,
+            &format!("127.0.0.1:{listener_port}"),
+            &backend_addr,
+            7001,
+        );
+        let reload_response = send_admin_request(
+            listener_port,
+            b"POST /__admin/api/reload HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
+        assert!(reload_response.contains("\"accepted\":true"));
+        assert!(reload_response.contains("\"reload_result\":\"success\""));
+        assert!(reload_response.contains("\"config_version\":2"));
+
+        let overview_after = send_admin_request(
+            listener_port,
+            b"GET /__admin/api/overview HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
+        assert!(overview_after.contains("\"config_version\":2"));
+        assert!(overview_after.contains("\"last_reload_result\":\"success\""));
+        assert!(overview_after.contains("\"upstream_read_timeout_ms\":7001"));
+
+        server.await.expect("server task").expect("gateway ok");
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[tokio::test]
+    async fn run_until_admin_reload_rejects_listener_shape_change_and_keeps_old_epoch() {
+        let listener_port = reserve_port();
+        let backend_port = reserve_port();
+        let backend_addr = format!("127.0.0.1:{backend_port}");
+        let config_path = std::env::temp_dir().join(format!(
+            "rivulet-reload-fail-{}.toml",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+
+        write_reload_test_config(
+            &config_path,
+            &format!("127.0.0.1:{listener_port}"),
+            &backend_addr,
+            4100,
+        );
+        let config = GatewayConfigFile::load_from_file(&config_path).expect("load config");
+        let app = GatewayApp::try_from_config(config, Some(config_path.clone()))
+            .expect("bootstrap app with reload path");
+        let server = tokio::spawn(async move {
+            app.run_until(async {
+                sleep(Duration::from_millis(450)).await;
+            })
+            .await
+        });
+
+        sleep(Duration::from_millis(40)).await;
+
+        write_reload_test_config(
+            &config_path,
+            &format!("127.0.0.1:{}", listener_port + 1),
+            &backend_addr,
+            9200,
+        );
+        let reload_response = send_admin_request(
+            listener_port,
+            b"POST /__admin/api/reload HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
+        assert!(reload_response.contains("\"accepted\":false"));
+        assert!(reload_response.contains("\"reload_result\":\"failed\""));
+        assert!(reload_response.contains("\"config_version\":1"));
+
+        let overview_after = send_admin_request(
+            listener_port,
+            b"GET /__admin/api/overview HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
+        assert!(overview_after.contains("\"config_version\":1"));
+        assert!(overview_after.contains("\"last_reload_result\":\"failed\""));
+        assert!(overview_after.contains("\"upstream_read_timeout_ms\":4100"));
+
+        server.await.expect("server task").expect("gateway ok");
+        let _ = fs::remove_file(config_path);
+    }
+
     fn write_test_tls_materials(prefix: &str) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
         let rcgen::CertifiedKey { cert, key_pair } =
             rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
@@ -1473,6 +1983,53 @@ mod tests {
         fs::write(&cert_path, cert_pem).expect("write cert");
         fs::write(&key_path, key_pem).expect("write key");
         (cert_path, key_path, cert_der)
+    }
+
+    fn write_reload_test_config(
+        path: &std::path::Path,
+        listener_address: &str,
+        backend_address: &str,
+        upstream_read_timeout_ms: u64,
+    ) {
+        let toml = format!(
+            concat!(
+                "[runtime]\n",
+                "worker_threads = 2\n",
+                "upstream_read_timeout_ms = {upstream_read_timeout_ms}\n\n",
+                "[[listeners]]\n",
+                "name = \"edge\"\n",
+                "address = \"{listener_address}\"\n",
+                "protocol = \"http1\"\n\n",
+                "[[upstreams]]\n",
+                "name = \"api\"\n",
+                "load_balance = \"round_robin\"\n\n",
+                "[[upstreams.endpoints]]\n",
+                "address = \"{backend_address}\"\n",
+                "weight = 1\n\n",
+                "[[routes]]\n",
+                "name = \"default\"\n",
+                "listener = \"edge\"\n",
+                "hosts = [\"example.test\"]\n",
+                "path_prefixes = [\"/\"]\n",
+                "methods = [\"GET\"]\n",
+                "upstream = \"api\"\n",
+            ),
+            upstream_read_timeout_ms = upstream_read_timeout_ms,
+            listener_address = listener_address,
+            backend_address = backend_address,
+        );
+        fs::write(path, toml).expect("write reload config");
+    }
+
+    async fn send_admin_request(port: u16, request_bytes: &[u8]) -> String {
+        let mut client = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect admin listener");
+        client
+            .write_all(request_bytes)
+            .await
+            .expect("write admin request");
+        String::from_utf8(read_http_response(&mut client).await).expect("admin response utf-8")
     }
 
     async fn read_http_response<S>(stream: &mut S) -> Vec<u8>

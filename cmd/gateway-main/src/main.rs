@@ -18,7 +18,17 @@ fn main() {
     };
     let worker_threads = config.runtime.worker_threads;
 
-    let app = GatewayApp::from_config(config);
+    let app = match GatewayApp::try_from_config(config, Some(path.clone())) {
+        Ok(app) => app,
+        Err(error) => {
+            eprintln!(
+                "failed to bootstrap gateway app {}: {}",
+                path.display(),
+                error
+            );
+            std::process::exit(1);
+        }
+    };
     let summary = app.summary();
 
     println!("gateway bootstrap complete");

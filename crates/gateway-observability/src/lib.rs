@@ -91,6 +91,9 @@ pub struct AccessLogRecord {
     pub path: Option<String>,
     pub share_id: Option<String>,
     pub share_scope: Option<String>,
+    pub config_version: Option<u64>,
+    pub tls_enabled: Option<bool>,
+    pub tls_listener: Option<String>,
     pub status_code: u16,
     pub upstream: Option<String>,
     pub duration_ms: u128,
@@ -113,6 +116,9 @@ impl AccessLogRecord {
             path: Some(request.path.clone()),
             share_id: request.share_id.clone(),
             share_scope: request.share_scope.clone(),
+            config_version: None,
+            tls_enabled: None,
+            tls_listener: None,
             status_code: response.status_code,
             upstream: response.upstream.clone(),
             duration_ms,
@@ -137,12 +143,28 @@ impl AccessLogRecord {
             path: request.map(|value| value.path.clone()),
             share_id: request.and_then(|value| value.share_id.clone()),
             share_scope: request.and_then(|value| value.share_scope.clone()),
+            config_version: None,
+            tls_enabled: None,
+            tls_listener: None,
             status_code,
             upstream: None,
             duration_ms,
             retries,
             error: Some(error.into()),
         }
+    }
+
+    /// 把连接所属的运行时快照打到日志里，确保重载后请求仍可回溯到具体生效版本。
+    pub fn with_runtime(
+        mut self,
+        config_version: u64,
+        tls_enabled: bool,
+        tls_listener: Option<&str>,
+    ) -> Self {
+        self.config_version = Some(config_version);
+        self.tls_enabled = Some(tls_enabled);
+        self.tls_listener = tls_listener.map(ToString::to_string);
+        self
     }
 
     pub fn to_json_line(&self) -> String {
@@ -156,6 +178,9 @@ impl AccessLogRecord {
                 "\"path\":{},",
                 "\"share_id\":{},",
                 "\"share_scope\":{},",
+                "\"config_version\":{},",
+                "\"tls_enabled\":{},",
+                "\"tls_listener\":{},",
                 "\"status_code\":{},",
                 "\"upstream\":{},",
                 "\"duration_ms\":{},",
@@ -170,6 +195,9 @@ impl AccessLogRecord {
             json_string_or_null(self.path.as_deref()),
             json_string_or_null(self.share_id.as_deref()),
             json_string_or_null(self.share_scope.as_deref()),
+            json_u64_or_null(self.config_version),
+            json_bool_or_null(self.tls_enabled),
+            json_string_or_null(self.tls_listener.as_deref()),
             self.status_code,
             json_string_or_null(self.upstream.as_deref()),
             self.duration_ms,
@@ -202,6 +230,20 @@ fn access_log_enabled() -> bool {
 fn json_string_or_null(value: Option<&str>) -> String {
     match value {
         Some(value) => format!("\"{}\"", escape_json(value)),
+        None => "null".into(),
+    }
+}
+
+fn json_u64_or_null(value: Option<u64>) -> String {
+    match value {
+        Some(value) => value.to_string(),
+        None => "null".into(),
+    }
+}
+
+fn json_bool_or_null(value: Option<bool>) -> String {
+    match value {
+        Some(value) => value.to_string(),
         None => "null".into(),
     }
 }
@@ -254,12 +296,17 @@ mod tests {
         let mut response = ResponseContext::new(200);
         response.upstream = Some("127.0.0.1:9000".into());
 
-        let line = AccessLogRecord::success(&request, &response, 12, 1).to_json_line();
+        let line = AccessLogRecord::success(&request, &response, 12, 1)
+            .with_runtime(3, true, Some("edge"))
+            .to_json_line();
 
         assert!(line.contains("\"listener\":\"edge\""));
         assert!(line.contains("\"request_id\":\"req-1\""));
         assert!(line.contains("\"share_id\":\"share-01\""));
         assert!(line.contains("\"share_scope\":\"preview\""));
+        assert!(line.contains("\"config_version\":3"));
+        assert!(line.contains("\"tls_enabled\":true"));
+        assert!(line.contains("\"tls_listener\":\"edge\""));
         assert!(line.contains("\"status_code\":200"));
         assert!(line.contains("\"retries\":1"));
     }

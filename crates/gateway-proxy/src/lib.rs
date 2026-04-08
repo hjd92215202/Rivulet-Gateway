@@ -1351,6 +1351,9 @@ mod tests {
                     upstream_read_timeout_ms: 5000,
                     upstream_retry_attempts: 2,
                     upstream_idle_pool_size: 1,
+                    config_version: 1,
+                    last_reload_result: "success".into(),
+                    last_reload_at: Some("2026-04-08T13:30:00Z".into()),
                 },
                 stats: AdminStats {
                     total_requests: 0,
@@ -1384,7 +1387,7 @@ mod tests {
     }
 
     fn fake_admin_service() -> AdminService {
-        AdminService::new(Arc::new(FakeAdminProvider))
+        AdminService::new(Arc::new(FakeAdminProvider), None)
     }
 
     #[tokio::test]

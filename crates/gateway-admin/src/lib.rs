@@ -13,11 +13,18 @@ pub trait AdminOverviewProvider: Send + Sync {
     fn overview(&self) -> AdminOverview;
 }
 
+/// 管理面写路径目前只开放“触发重载”这一种动作，
+/// 通过单独 trait 把执行逻辑从 HTTP 路由层拆开。
+pub trait AdminReloadHandler: Send + Sync {
+    fn reload(&self) -> AdminReloadResult;
+}
+
 /// 管理面服务只负责识别管理路径并生成响应。
 /// 真正的数据来源由外部 provider 注入，避免 member 之间相互缠绕。
 #[derive(Clone)]
 pub struct AdminService {
     provider: Arc<dyn AdminOverviewProvider>,
+    reloader: Option<Arc<dyn AdminReloadHandler>>,
 }
 
 /// 为了让 proxy 层能够直接短路回写响应，这里返回完整的状态码和字节缓冲。
@@ -58,6 +65,9 @@ pub struct AdminRuntime {
     pub upstream_read_timeout_ms: u128,
     pub upstream_retry_attempts: usize,
     pub upstream_idle_pool_size: usize,
+    pub config_version: u64,
+    pub last_reload_result: String,
+    pub last_reload_at: Option<String>,
 }
 
 /// 运行时指标快照。
@@ -99,10 +109,22 @@ pub struct AdminUpstream {
     pub endpoints: Vec<String>,
 }
 
+/// 管理面重载接口返回的稳定结构。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminReloadResult {
+    pub accepted: bool,
+    pub reload_result: String,
+    pub config_version: u64,
+    pub message: String,
+}
+
 impl AdminService {
     /// 构造一个只读管理面服务。
-    pub fn new(provider: Arc<dyn AdminOverviewProvider>) -> Self {
-        Self { provider }
+    pub fn new(
+        provider: Arc<dyn AdminOverviewProvider>,
+        reloader: Option<Arc<dyn AdminReloadHandler>>,
+    ) -> Self {
+        Self { provider, reloader }
     }
 
     /// 如果请求命中了管理命名空间，就直接在这里返回响应；
@@ -128,6 +150,7 @@ impl AdminService {
 
         match request.method {
             HttpMethod::Get | HttpMethod::Head => Some(self.handle_read(request)),
+            HttpMethod::Post => Some(self.handle_write(request)),
             _ => Some(text_response(
                 request.method,
                 405,
@@ -172,6 +195,52 @@ impl AdminService {
                 )
             }
             _ => text_response(request.method, 404, "Not Found", "admin asset not found\n"),
+        }
+    }
+
+    /// 首版写路径仅开放 reload 控制接口，避免管理面写能力无边界扩散。
+    fn handle_write(&self, request: &RequestContext) -> AdminHttpResponse {
+        if request.path != "/__admin/api/reload" {
+            return text_response(
+                request.method,
+                405,
+                "Method Not Allowed",
+                "admin write path only supports POST /__admin/api/reload in the first cut\n",
+            );
+        }
+
+        match &self.reloader {
+            Some(reloader) => {
+                let result = reloader.reload();
+                let status = if result.accepted { 200 } else { 500 };
+                let reason = if result.accepted {
+                    "OK"
+                } else {
+                    "Internal Server Error"
+                };
+                asset_response(
+                    request.method,
+                    status,
+                    reason,
+                    "application/json; charset=utf-8",
+                    &result.to_json(),
+                )
+            }
+            None => {
+                let result = AdminReloadResult {
+                    accepted: false,
+                    reload_result: "failed".into(),
+                    config_version: 0,
+                    message: "reload handler is not configured".into(),
+                };
+                asset_response(
+                    request.method,
+                    501,
+                    "Not Implemented",
+                    "application/json; charset=utf-8",
+                    &result.to_json(),
+                )
+            }
         }
     }
 }
@@ -221,7 +290,10 @@ impl AdminRuntime {
                 "\"upstream_connect_timeout_ms\":{},",
                 "\"upstream_read_timeout_ms\":{},",
                 "\"upstream_retry_attempts\":{},",
-                "\"upstream_idle_pool_size\":{}",
+                "\"upstream_idle_pool_size\":{},",
+                "\"config_version\":{},",
+                "\"last_reload_result\":\"{}\",",
+                "\"last_reload_at\":{}",
                 "}}"
             ),
             self.graceful_shutdown_secs,
@@ -232,6 +304,28 @@ impl AdminRuntime {
             self.upstream_read_timeout_ms,
             self.upstream_retry_attempts,
             self.upstream_idle_pool_size,
+            self.config_version,
+            escape_json(&self.last_reload_result),
+            json_string_or_null(self.last_reload_at.as_deref()),
+        )
+    }
+}
+
+impl AdminReloadResult {
+    fn to_json(&self) -> String {
+        format!(
+            concat!(
+                "{{",
+                "\"accepted\":{},",
+                "\"reload_result\":\"{}\",",
+                "\"config_version\":{},",
+                "\"message\":\"{}\"",
+                "}}"
+            ),
+            self.accepted,
+            escape_json(&self.reload_result),
+            self.config_version,
+            escape_json(&self.message),
         )
     }
 }
@@ -325,7 +419,7 @@ fn asset_response(
     .into_bytes();
 
     // `HEAD` 仍然返回完整 header，但不回写 body。
-    if method == HttpMethod::Get {
+    if method != HttpMethod::Head {
         response.extend_from_slice(body_bytes);
     }
 
@@ -368,6 +462,13 @@ where
     format!("[{}]", items.into_iter().collect::<Vec<_>>().join(","))
 }
 
+fn json_string_or_null(value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("\"{}\"", escape_json(value)),
+        None => "null".into(),
+    }
+}
+
 /// 只处理当前管理面会遇到的必要转义字符。
 fn escape_json(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
@@ -390,6 +491,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
     struct FakeProvider;
+    struct FakeReloader;
 
     impl AdminOverviewProvider for FakeProvider {
         fn overview(&self) -> AdminOverview {
@@ -409,6 +511,9 @@ mod tests {
                     upstream_read_timeout_ms: 4000,
                     upstream_retry_attempts: 2,
                     upstream_idle_pool_size: 1,
+                    config_version: 7,
+                    last_reload_result: "success".into(),
+                    last_reload_at: Some("2026-04-08T13:30:00Z".into()),
                 },
                 stats: AdminStats {
                     total_requests: 10,
@@ -441,6 +546,17 @@ mod tests {
         }
     }
 
+    impl AdminReloadHandler for FakeReloader {
+        fn reload(&self) -> AdminReloadResult {
+            AdminReloadResult {
+                accepted: true,
+                reload_result: "success".into(),
+                config_version: 8,
+                message: "reload applied".into(),
+            }
+        }
+    }
+
     fn loopback_request(path: &str, method: HttpMethod) -> RequestContext {
         let mut request = RequestContext::new("edge", "localhost:8080", path, method);
         request.client_addr = Some(SocketAddr::V4(SocketAddrV4::new(
@@ -452,14 +568,14 @@ mod tests {
 
     #[test]
     fn ignores_non_admin_path() {
-        let service = AdminService::new(Arc::new(FakeProvider));
+        let service = AdminService::new(Arc::new(FakeProvider), None);
         let request = loopback_request("/api/orders", HttpMethod::Get);
         assert_eq!(service.maybe_handle(&request), None);
     }
 
     #[test]
     fn rejects_remote_admin_access() {
-        let service = AdminService::new(Arc::new(FakeProvider));
+        let service = AdminService::new(Arc::new(FakeProvider), None);
         let mut request = RequestContext::new("edge", "example.test", "/__admin/", HttpMethod::Get);
         request.client_addr = Some(SocketAddr::V4(SocketAddrV4::new(
             Ipv4Addr::new(10, 0, 0, 2),
@@ -480,7 +596,7 @@ mod tests {
 
     #[test]
     fn serves_admin_html() {
-        let service = AdminService::new(Arc::new(FakeProvider));
+        let service = AdminService::new(Arc::new(FakeProvider), None);
         let response = service
             .maybe_handle(&loopback_request("/__admin/", HttpMethod::Get))
             .expect("admin response should exist");
@@ -493,7 +609,7 @@ mod tests {
 
     #[test]
     fn serves_admin_overview_json() {
-        let service = AdminService::new(Arc::new(FakeProvider));
+        let service = AdminService::new(Arc::new(FakeProvider), None);
         let response = service
             .maybe_handle(&loopback_request("/__admin/api/overview", HttpMethod::Get))
             .expect("admin response should exist");
@@ -501,13 +617,15 @@ mod tests {
         let text = String::from_utf8(response.bytes).expect("utf-8");
         assert_eq!(response.status_code, 200);
         assert!(text.contains("\"worker_threads\":4"));
+        assert!(text.contains("\"config_version\":7"));
+        assert!(text.contains("\"last_reload_result\":\"success\""));
         assert!(text.contains("\"listeners\":["));
         assert!(text.contains("\"upstreams\":["));
     }
 
     #[test]
     fn head_request_returns_headers_without_body() {
-        let service = AdminService::new(Arc::new(FakeProvider));
+        let service = AdminService::new(Arc::new(FakeProvider), None);
         let response = service
             .maybe_handle(&loopback_request("/__admin/api/overview", HttpMethod::Head))
             .expect("admin response should exist");
@@ -520,7 +638,7 @@ mod tests {
 
     #[test]
     fn rejects_non_read_admin_method() {
-        let service = AdminService::new(Arc::new(FakeProvider));
+        let service = AdminService::new(Arc::new(FakeProvider), None);
         let response = service
             .maybe_handle(&loopback_request("/__admin/api/overview", HttpMethod::Post))
             .expect("admin response should exist");
@@ -529,6 +647,32 @@ mod tests {
         assert_eq!(response.status_code, 405);
         assert!(text.starts_with("HTTP/1.1 405 Method Not Allowed"));
         assert!(text.contains("Content-Type: text/plain; charset=utf-8"));
+    }
+
+    #[test]
+    fn post_reload_returns_json_result() {
+        let service = AdminService::new(Arc::new(FakeProvider), Some(Arc::new(FakeReloader)));
+        let response = service
+            .maybe_handle(&loopback_request("/__admin/api/reload", HttpMethod::Post))
+            .expect("admin response should exist");
+
+        let text = String::from_utf8(response.bytes).expect("utf-8");
+        assert_eq!(response.status_code, 200);
+        assert!(text.contains("\"accepted\":true"));
+        assert!(text.contains("\"reload_result\":\"success\""));
+        assert!(text.contains("\"config_version\":8"));
+    }
+
+    #[test]
+    fn post_reload_without_handler_returns_501() {
+        let service = AdminService::new(Arc::new(FakeProvider), None);
+        let response = service
+            .maybe_handle(&loopback_request("/__admin/api/reload", HttpMethod::Post))
+            .expect("admin response should exist");
+
+        let text = String::from_utf8(response.bytes).expect("utf-8");
+        assert_eq!(response.status_code, 501);
+        assert!(text.contains("\"accepted\":false"));
     }
 
     #[test]
