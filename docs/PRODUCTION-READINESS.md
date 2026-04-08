@@ -2,344 +2,122 @@
 
 ## English
 
-Report date: April 8, 2026
-
+Report date: April 8, 2026  
 Project: `Rivulet Gateway / 溪流网关`
-
-This report describes the current boundary of the gateway based on repository state, automated tests, packaging work, and local benchmark exploration.
 
 ### Executive Summary
 
 Current status:
 
-- suitable for controlled lab, staging, and low-risk grayscale validation
-- not yet ready for broad Internet-facing production traffic
+- suitable for controlled production grayscale (API-first traffic class)
+- not yet recommended for broad Internet mixed-traffic edge
 
-Why:
+Key reason:
 
-- core reverse proxy path exists and is tested
-- packaging and CI/CD are now repository-owned
-- conservative keepalive reuse exists for safe response boundaries
-- dual-track TLS foundation is now available and test-gated
-- hot reload first cut is now closed, but reliability SLO gates and disposable-environment lifecycle validation are still not closed
+- G3 public API gate execution chain is now connected and blocking in CI/release
+- reliability and capacity checks are now automated and auditable
+- remaining gaps are scale hardening and release trust-depth improvement
 
 ### Current Gate Status (April 8, 2026)
 
 - `cargo fmt --all -- --check`: pass
-- `cargo test --workspace`: pass (including built-in TLS runtime path)
+- `cargo test --workspace`: pass
 - `scripts/check-script-standards.sh` (Git Bash): pass
-- `scripts/linux-public-api-gate.sh` (Git Bash): pass (schema contract only, load execution not yet enabled)
+- `scripts/linux-public-api-gate.sh --mode schema-check --profile standard`: pass
+- CI/release now run executable public API gate jobs on Linux `x86_64` and `arm64`, and block on failure
 
-### What Exists Today
+### What Is Production-Usable Now
 
-Implemented layers:
+- HTTP/1.1 reverse proxy kernel
+- explicit unsupported-path rejection (`Unsupported -> 501`)
+- sequential downstream keepalive model (non-pipelined)
+- route auth entry, share isolation, and first-rate-limit layer
+- built-in Rustls TLS option plus external-TLS-first deployment path
+- local hot reload (`SIGHUP` + loopback `POST /__admin/api/reload`) with validate-first atomic swap and rollback-on-failure
+- structured runtime/reload observability (`config_version`, `last_reload_result`, `last_reload_at`, `tls_enabled`, `tls_listener`)
+- Linux package + systemd lifecycle gates on `x86_64` and `arm64`
+- public API reliability gate outputs (`result.json`, `summary.md`) archived in workflows
 
-- typed config model
-- routing
-- filter chain skeleton
-- upstream registry and health-state tracking
-- HTTP/1.1 request parsing
-- reverse proxy over raw TCP
-- conservative upstream keepalive reuse
-- explicit protocol-boundary rejection matrix for unsupported HTTP/1.1 paths
-- runtime listener loop and graceful drain
-- Windows and Linux packaging skeleton
-- GitHub Actions for CI, packaging, release, and nightly benchmark collection
+### Hard Limits
 
-### Current Hard Limits
+- protocol scope remains HTTP/1.1 only
+- no HTTP/2, no mTLS, no WebSocket in current production claim
+- no chunked request/response support (explicitly rejected)
+- listener address/port and `worker_threads` changes still require restart
 
-- HTTP/1.1 only
-- built-in Rustls TLS termination is available through `listeners[].tls` with fail-fast cert/key loading and mismatch checks
-- no HTTP/2
-- no chunked request support
-- no chunked upstream response support
-- no downstream request pipelining; current model supports only sequential keepalive requests on one connection
-- no real auth, rate limit, WAF, or policy engine yet
-- hot reload first cut is available (`SIGHUP` + loopback `POST /__admin/api/reload`), but no dynamic distributed config plane yet
-- no per-asset detached signatures yet (current trust anchor is a keyless-signed checksum manifest)
+### G3 Scope Closure
 
-### Known Engineering Gaps
+Closed in this batch:
 
-1. Runtime hot-reload is first-cut only; listener `name/address/protocol` and `worker_threads` changes still require restart by design.
-2. Packaging validation now includes CI/release systemd lifecycle gates for Linux x86_64 and arm64, but disposable-VM installation and upgrade coverage is still missing.
-3. The benchmark harness is intentionally conservative and local; it is not a substitute for server-grade load testing on Linux.
-4. Public API reliability/capacity gates and stable SLO reporting are not fully automated yet (current gate is schema validation only).
-5. Release checksums, keyless manifest signing, SBOM export, and provenance attestations now exist, but stronger per-asset signing policy and trust publication still need refinement.
+- executable gate modes: `schema-check`, `baseline`, `soak`, `failure-drill`, `evaluate`
+- profile-aware thresholds: `standard`, `strict`, `observe` (default is blocking `standard`)
+- scenario-level error classification with gateway-vs-upstream split
+- CI/release blocking integration for Linux `x86_64` and `arm64`
 
-### G2 Closure (First Cut, Locked Semantics)
+### Remaining Work Before Stronger Public-Edge Claim
 
-- reload triggers: Linux `SIGHUP` and loopback-only `POST /__admin/api/reload`
-- apply mode: validate-first and atomic swap; keep old config serving on validation failure
-- v1 boundary: listener address/port changes are not hot-swappable and require restart
-- observability contract: expose `config_version`, `reload_result`, `tls_enabled`, `tls_listener`
-- admin runtime overview now exposes `config_version`, `last_reload_result`, and `last_reload_at`
-
-### Validation Completed
-
-Repository validation:
-
-- workspace tests
-- protocol boundary tests
-- explicit `501` rejection coverage for unsupported transfer-encoding paths
-- keepalive reuse tests
-- Windows package build and smoke validation
-- Linux package structure validation designed into CI
-- Linux installed-layout smoke validation designed into CI and release workflows
-- Linux systemd lifecycle validation gated in CI and release workflows for x86_64 and arm64 artifacts
-
-Key validation entry points:
-
-- [packaging/SERVER-VALIDATION.md](C:\Users\brace\Documents\New%20project\packaging\SERVER-VALIDATION.md)
-- [packaging/tests/run-linux-validation.sh](C:\Users\brace\Documents\New%20project\packaging\tests\run-linux-validation.sh)
-- [scripts/bench-baseline.sh](C:\Users\brace\Documents\New%20project\scripts\bench-baseline.sh)
-
-### Local Benchmark Snapshot
-
-Environment used:
-
-- Windows 10 Pro build 19045
-- Intel i7-6500U
-- 2 physical cores / 4 logical processors
-- 16 GB RAM
-- Rust 1.92.0
-
-Important caution:
-
-- these numbers are local loopback baselines, not release-quality server benchmarks
-- they are useful for trend tracking and bottleneck discovery, not final capacity planning
-
-Observed stable path with `upstream_idle_pool_size = 1`:
-
-- 64-byte response, concurrency 8: about 1561 req/s, p95 about 9.9 ms
-- 64-byte response, concurrency 32: about 1266 req/s, p95 about 58.8 ms
-- 4096-byte response, concurrency 8: about 1590 req/s, p95 about 11.0 ms
-- 4096-byte response, concurrency 64: about 1734 req/s, p95 about 57.1 ms
-
-Observed warning sign:
-
-- when upstream keepalive is disabled and every request reconnects, this Windows host can hit `502` responses and socket churn behavior much earlier
-- this strongly suggests connection churn and local socket lifecycle become a bottleneck before the gateway core itself is fully exercised
-
-Engineering conclusion:
-
-- conservative upstream connection reuse is already materially important for stability
-- future production exploration should prioritize Linux hosts and real NIC traffic before drawing capacity conclusions
-
-### Packaging And Release Readiness
-
-Current state:
-
-- Windows x86_64 zip: implemented and locally validated
-- Linux x86_64 tar.gz: implemented in scripts and workflows
-- Linux x86_64 rpm: implemented in scripts and workflows
-- Linux arm64 tar.gz/rpm: implemented in scripts and workflows
-
-Release automation status:
-
-- CI builds and validates package artifacts
-- release workflow produces artifacts and checksum manifest
-- checksum verification script exists
-- release workflow signs `SHA256SUMS.txt` with keyless Sigstore (`SHA256SUMS.sig` + `SHA256SUMS.pem`)
-- CI/release workflows emit SBOM and provenance attestations
-- CI/release workflows block publish when Linux x86_64 or arm64 systemd lifecycle gates fail
-
-Remaining release-grade work:
-
-- stronger per-asset detached signature policy
-- native Linux install verification in disposable test systems
-- upgrade and rollback verification in disposable test systems
-
-### Production Use Guidance Right Now
-
-Reasonable near-term use:
-
-- development environments
-- CI integration tests
-- internal staging
-- low-risk grayscale routes with tight scope and rollback control
-
-Not recommended yet:
-
-- public edge gateway for mixed client traffic
-- TLS termination at scale
-- multi-tenant policy enforcement
-- high-throughput production ingress without Linux server benchmarking and installation validation
-
-### Next Bottlenecks To Address
-
-1. public API reliability and capacity gates for Linux x86_64 + arm64 with stable SLO thresholds
-2. Linux real-host benchmark and disposable-environment install/upgrade validation
-3. stronger per-asset detached signature policy and trust publication
-4. runtime configurability and operations plane maturity
+1. threshold tuning and capacity model calibration on stable Linux benchmark hosts
+2. disposable-environment full lifecycle validation at scale (install, upgrade, rollback, uninstall)
+3. stronger per-asset detached signature policy and public trust publication
+4. operation maturity for larger multi-team rollout
 
 ## 中文
 
-报告日期：2026 年 4 月 8 日
-
+报告日期：2026 年 4 月 8 日  
 项目：`Rivulet Gateway / 溪流网关`
-
-本报告基于仓库现状、自动化测试、打包工作和本地 benchmark 探索，描述当前网关的能力边界。
 
 ### 执行摘要
 
 当前状态：
 
-- 适合受控实验环境、staging 环境和低风险灰度验证
-- 还不适合承接大范围公网生产流量
+- 已适合受控生产灰度（以 API 流量为主）
+- 暂不建议直接承接大规模公网混合流量入口
 
-原因：
+核心原因：
 
-- 核心反向代理链路已经存在并且有测试覆盖
-- 打包和 CI/CD 已经内建到仓库
-- 对安全响应边界已有保守的 keepalive 复用
-- TLS 双轨基础能力已经具备并纳入测试门禁
-- 热重载首版已收口，但可靠性 SLO 门禁和一次性环境生命周期验证还未收口
+- G3 公网 API 门禁执行链已打通，并在 CI/release 中进入阻断模式
+- 可靠性与容量检查已自动化且可审计
+- 剩余短板集中在规模化加固与发布信任链深度
 
 ### 当前门禁状态（2026 年 4 月 8 日）
 
 - `cargo fmt --all -- --check`：通过
-- `cargo test --workspace`：通过（含内建 TLS 运行时链路）
+- `cargo test --workspace`：通过
 - `scripts/check-script-standards.sh`（Git Bash）：通过
-- `scripts/linux-public-api-gate.sh`（Git Bash）：通过（当前仅校验阈值结构，不执行重负载）
+- `scripts/linux-public-api-gate.sh --mode schema-check --profile standard`：通过
+- CI/release 已在 Linux `x86_64` 与 `arm64` 执行可执行公网 API 门禁，任一失败即阻断后续发布
 
-### 当前已具备能力
+### 当前可用于生产灰度的能力
 
-已实现层次：
-
-- 强类型配置模型
-- 路由
-- 过滤器链骨架
-- 上游注册中心与健康状态跟踪
-- HTTP/1.1 请求解析
-- 基于原始 TCP 的反向代理
-- 保守的上游 keepalive 复用
-- 对不支持 HTTP/1.1 路径的显式协议边界拒绝矩阵
-- 监听运行时与优雅 drain
-- Windows 与 Linux 打包骨架
-- 用于 CI、打包、发布和夜间 benchmark 收集的 GitHub Actions
+- HTTP/1.1 反向代理内核
+- 非支持路径显式拒绝（`Unsupported -> 501`）
+- 下游顺序 keepalive（非 pipelining）模型
+- 路由级鉴权入口、分享隔离、限流第一层能力
+- 内建 Rustls TLS 选项与外置 TLS 优先生产路径
+- 本地热重载（`SIGHUP` + loopback `POST /__admin/api/reload`），采用先校验后原子切换，失败回滚旧配置
+- 结构化运行时/重载可观测字段（`config_version`、`last_reload_result`、`last_reload_at`、`tls_enabled`、`tls_listener`）
+- Linux `x86_64`/`arm64` 打包与 systemd 生命周期门禁
+- 公网 API 门禁产物（`result.json`、`summary.md`）可在工作流中归档审计
 
 ### 当前硬边界
 
-- 仅支持 HTTP/1.1
-- 已支持通过 `listeners[].tls` 启用内建 Rustls TLS termination，并在证书/私钥加载失败或不匹配时快速失败
-- 没有 HTTP/2
-- 不支持 chunked request
-- 不支持 chunked upstream response
-- 没有下游请求 pipelining；当前模型只支持同连接顺序 keepalive 请求
-- 还没有真正的认证、限流、WAF 或策略引擎
-- 已具备热重载首版（`SIGHUP` + 仅 loopback 可访问的 `POST /__admin/api/reload`），但还没有动态分布式配置面
-- 还没有“每个产物单独签名”的完整策略（当前信任锚是 keyless 签名的 checksum 清单）
+- 协议面仍限定 HTTP/1.1
+- 现阶段生产声明不包含 HTTP/2、mTLS、WebSocket
+- chunked request/response 仍不支持，采用显式拒绝策略
+- listener 地址/端口与 `worker_threads` 变更仍需重启生效
 
-### 已知工程缺口
+### G3 本批收口
 
-1. 运行时热重载目前是首版能力；listener 的 `name/address/protocol` 和 `worker_threads` 变更仍按设计要求重启。
-2. 打包验证已覆盖 CI/release 中 Linux x86_64 与 arm64 的 systemd 生命周期门禁，但一次性 VM 环境中的安装与升级覆盖仍然缺失。
-3. benchmark 工具当前故意保持保守且只跑本地，不可替代 Linux 服务器级负载测试。
-4. 公网 API 可靠性/容量门禁与稳定 SLO 报告还未完全自动化（当前只完成阈值结构门禁）。
-5. 发布 checksum、keyless 清单签名、SBOM 与 provenance 已接入，但按单个产物逐一签名和更强信任链发布仍需完善。
+本批已完成：
 
-### G2 收口（首版，语义已锁定）
+- 可执行门禁模式：`schema-check`、`baseline`、`soak`、`failure-drill`、`evaluate`
+- 多档阈值：`standard`、`strict`、`observe`（默认 `standard` 阻断）
+- 场景级网关故障与上游业务故障分离统计
+- Linux `x86_64`/`arm64` 的 CI/release 阻断接线
 
-- 重载触发：Linux `SIGHUP` 与仅 loopback 可访问的 `POST /__admin/api/reload`
-- 生效模式：先完整校验再原子切换；校验失败时保持旧配置继续服务
-- V1 边界：监听地址/端口变更不支持热切换，需重启生效
-- 可观测契约：输出 `config_version`、`reload_result`、`tls_enabled`、`tls_listener`
-- 管理面 runtime 概览已输出 `config_version`、`last_reload_result`、`last_reload_at`
+### 在更强公网声明前仍需补齐
 
-### 已完成验证
-
-仓库级验证：
-
-- workspace tests
-- 协议边界测试
-- 针对不支持 transfer-encoding 路径的显式 `501` 拒绝测试
-- keepalive 复用测试
-- Windows 打包构建与 smoke 验证
-- Linux 包结构验证已接入 CI
-- Linux 安装后布局 smoke 验证已接入 CI 和 release workflow
-- Linux x86_64 与 arm64 产物的 systemd 生命周期验证已接入 CI 与 release 门禁
-
-关键验证入口：
-
-- [packaging/SERVER-VALIDATION.md](C:\Users\brace\Documents\New%20project\packaging\SERVER-VALIDATION.md)
-- [packaging/tests/run-linux-validation.sh](C:\Users\brace\Documents\New%20project\packaging\tests\run-linux-validation.sh)
-- [scripts/bench-baseline.sh](C:\Users\brace\Documents\New%20project\scripts\bench-baseline.sh)
-
-### 本地 Benchmark 快照
-
-测试环境：
-
-- Windows 10 Pro build 19045
-- Intel i7-6500U
-- 2 个物理核心 / 4 个逻辑处理器
-- 16 GB RAM
-- Rust 1.92.0
-
-重要提示：
-
-- 这些数字只是本地 loopback 基线，不是可直接对外宣称的服务器 benchmark
-- 它们适合用来做趋势跟踪和瓶颈发现，不适合直接用于容量规划
-
-当 `upstream_idle_pool_size = 1` 时，观察到的稳定路径：
-
-- 64 字节响应、并发 8：约 1561 req/s，p95 约 9.9 ms
-- 64 字节响应、并发 32：约 1266 req/s，p95 约 58.8 ms
-- 4096 字节响应、并发 8：约 1590 req/s，p95 约 11.0 ms
-- 4096 字节响应、并发 64：约 1734 req/s，p95 约 57.1 ms
-
-观察到的警示信号：
-
-- 当关闭上游 keepalive、每个请求都重连时，这台 Windows 主机会更早出现 `502` 和 socket churn 行为
-- 这说明在网关核心还没有被完全打满之前，连接 churn 和本地 socket 生命周期就已经先成为瓶颈
-
-工程结论：
-
-- 保守的上游连接复用已经对稳定性产生了实质帮助
-- 后续生产探索应优先转向 Linux 主机和真实网卡流量，再做容量判断
-
-### 打包与发布就绪度
-
-当前状态：
-
-- Windows x86_64 zip：已实现并完成本地验证
-- Linux x86_64 tar.gz：已在脚本和工作流中实现
-- Linux x86_64 rpm：已在脚本和工作流中实现
-- Linux arm64 tar.gz/rpm：已在脚本和工作流中实现
-
-发布自动化状态：
-
-- CI 会构建并验证打包产物
-- release workflow 会产出发行包和 checksum 清单
-- 已有 checksum 校验脚本
-- release workflow 会对 `SHA256SUMS.txt` 做 keyless Sigstore 签名（`SHA256SUMS.sig` + `SHA256SUMS.pem`）
-- CI/release workflow 会产出 SBOM 与 provenance
-- CI/release workflow 在 Linux x86_64 或 arm64 的 systemd 生命周期门禁失败时会阻断后续发布
-
-距离更高等级发布还需补齐：
-
-- 更强的按单个产物逐一 detached 签名策略
-- 在一次性测试系统中完成原生 Linux 安装验证
-- 在一次性测试系统中完成升级与回滚验证
-
-### 当前生产使用建议
-
-当前合理的近端使用场景：
-
-- 开发环境
-- CI 集成测试
-- 内部 staging
-- 范围受控、可快速回滚的低风险灰度路由
-
-当前不建议：
-
-- 面向公网混合客户端的边缘网关
-- 大规模 TLS termination
-- 多租户策略执行
-- 在缺少 Linux 服务器 benchmark 与安装验证前承接高吞吐生产入口
-
-### 下一批瓶颈
-
-1. Linux x86_64 + arm64 公网 API 可靠性/容量门禁与稳定 SLO 阈值
-2. Linux 真实主机 benchmark 与一次性环境安装/升级验证
-3. 更强的逐产物 detached 签名策略与信任链公开
-4. 运行时可配置性与运维平面成熟度
+1. 在稳定 Linux 基准机上继续校准阈值与容量模型
+2. 在一次性环境中扩大安装、升级、回滚、卸载全链路验证规模
+3. 升级逐产物 detached 签名策略并公开信任链材料
+4. 面向多团队协作场景的运维成熟度提升
