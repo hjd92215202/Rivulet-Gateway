@@ -78,6 +78,13 @@ Every run writes:
 - when used together with `linux-systemd-validate.sh`, key `systemctl` actions are guarded by command timeout
 - CI/release also applies workflow-level timeout to avoid indefinite hangs
 
+### Log channel and evaluate path safety
+
+- stage progress logs are emitted on `stderr` and are not part of machine-returned stdout values
+- evaluate mode summary files are passed by explicit paths between script functions
+- expected guardrail:
+  - no stage text can be concatenated into JSON file paths during evaluate scoring
+
 ## 中文
 
 本文档定义溪流网关在 Linux `x86_64` 与 `arm64` 上的公网 API 门禁基线压测契约。
@@ -155,3 +162,10 @@ arm64 只需改为：
 - `summary.md` 追加进程停止结果与耗时秒数
 - 与 `linux-systemd-validate.sh` 配合时，关键 `systemctl` 操作带命令级超时保护
 - CI/release 侧同时有 workflow 级超时兜底，避免无限挂死
+
+### 日志通道与 evaluate 路径安全
+
+- stage 进度日志统一写入 `stderr`，不再混入机器读取的 stdout 返回值
+- evaluate 模式的 summary 文件在脚本函数间改为显式路径传递
+- 预期防线：
+  - 评分阶段不会再把 stage 文本拼接进 JSON 文件路径

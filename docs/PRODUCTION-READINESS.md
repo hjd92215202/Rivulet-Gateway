@@ -48,6 +48,14 @@ The main progress of this batch:
 - systemd lifecycle script now wraps key `systemctl` actions with command timeout guards
 - CI/release systemd lifecycle jobs now have explicit workflow-level `timeout-minutes`
 
+### G3.1.2 hotfix closure (public-api gate evaluate path pollution)
+
+- stage progress logs are now emitted to `stderr` via shared `print_stage`
+- `linux-public-api-gate.sh` no longer relies on command substitution to capture summary paths in evaluate flow
+- script standards check now blocks regressions where `print_stage` writes to `stdout`
+- expected failure class removed:
+  - stage text accidentally concatenated into JSON file path and causing `FileNotFoundError`
+
 ### CI hang troubleshooting checklist
 
 1. check fixture backend shutdown signal path and confirm SIGTERM exits within bounded time
@@ -116,6 +124,14 @@ The main progress of this batch:
   - 仍无法退出时显式失败，不再无限等待
 - systemd 生命周期脚本对关键 `systemctl` 操作增加命令级超时保护
 - CI/release 的 systemd lifecycle job 增加 workflow 级 `timeout-minutes` 兜底
+
+### G3.1.2 热修复收口（public-api gate evaluate 路径污染）
+
+- 共享 `print_stage` 的进度日志统一改为写入 `stderr`
+- `linux-public-api-gate.sh` 的 evaluate 流程不再通过命令替换捕获 summary 路径
+- 脚本标准检查新增约束：`print_stage` 若写回 `stdout` 会被门禁拦截
+- 已移除这类错误形态：
+  - stage 文本拼入 JSON 路径并触发 `FileNotFoundError`
 
 ### CI 卡死排障检查清单
 

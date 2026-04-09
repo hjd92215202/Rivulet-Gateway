@@ -48,6 +48,7 @@ flowchart TD
 - Any public-api gate failure blocks downstream publish chain (`supply-chain` in CI, `publish` in release).
 - Gate jobs now run with explicit timeout and long-run evaluate windows.
 - `script-standards` now includes fixture backend SIGTERM termination regression check.
+- `script-standards` now also enforces `print_stage` -> `stderr` log channel contract.
 - `systemd-lifecycle-linux-x86_64` and `systemd-lifecycle-linux-arm64` now run with workflow-level timeout guards.
 
 ### Audit artifacts
@@ -65,6 +66,7 @@ These artifacts include architecture, duration profile, request-floor checks, an
   - bounded stop contract (`TERM` -> bounded wait -> `KILL` -> explicit fail)
 - script execution layer:
   - key `systemctl` calls wrapped with command timeout in Linux systemd validation
+  - stage logs are isolated on `stderr`, and evaluate summary paths are wired explicitly (no stdout capture pollution)
 - workflow orchestration layer:
   - explicit `timeout-minutes` on long-running systemd lifecycle jobs
 - diagnosis expectation:
@@ -93,6 +95,7 @@ These artifacts include architecture, duration profile, request-floor checks, an
   - release 阻断 `publish`
 - 门禁 job 已接入明确超时与长跑 evaluate 窗口。
 - `script-standards` 已加入 fixture backend 的 SIGTERM 退出回归校验。
+- `script-standards` 新增 `print_stage` 必须写 `stderr` 的通道约束。
 - `systemd-lifecycle-linux-x86_64` 与 `systemd-lifecycle-linux-arm64` 已增加 workflow 级超时保护。
 
 ### 审计产物
@@ -110,6 +113,7 @@ These artifacts include architecture, duration profile, request-floor checks, an
   - 有界停止契约（`TERM` -> 有限等待 -> `KILL` -> 显式失败）
 - 脚本执行层：
   - Linux systemd 验证中的关键 `systemctl` 调用都带命令级超时
+  - stage 日志与 stdout 返回值隔离（写 stderr），evaluate summary 路径改为显式传递
 - workflow 编排层：
   - 长耗时 systemd lifecycle job 配置 `timeout-minutes`
 - 诊断目标：
