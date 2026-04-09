@@ -41,6 +41,12 @@ Newly closed in G3.1:
 - 3-sample median scoring with request-floor hard checks
 - explicit failure reasons in gate outputs
 
+Newly closed in G3.1.3:
+
+- public-api gate diagnostics are emitted directly in evaluate logs (`failure_reasons` / `threshold_checks` / `observed`)
+- gate fixture runtime for standard evaluate uses retry budget `2` (without threshold relaxation)
+- proxy kernel supports bounded same-endpoint retry for transient upstream I/O in single-endpoint clusters
+
 Remaining in Milestone 2:
 
 - threshold tuning iteration on stable Linux runners
@@ -103,6 +109,12 @@ G3.1 新增收口：
 - 长跑默认窗口（baseline/soak/failure-drill）
 - 3 次采样中位数判分 + 最小样本硬门槛
 - 门禁产物可区分具体失败原因
+
+G3.1.3 新增收口：
+
+- public-api gate evaluate 日志直接输出关键诊断字段（`failure_reasons` / `threshold_checks` / `observed`）
+- standard evaluate 工况重试预算提升到 `2`（不放宽阈值）
+- 代理内核在单节点 upstream 场景支持上游瞬态 I/O 的有界同节点重试
 
 里程碑 2 剩余项：
 

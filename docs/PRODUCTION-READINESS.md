@@ -56,6 +56,20 @@ The main progress of this batch:
 - expected failure class removed:
   - stage text accidentally concatenated into JSON file path and causing `FileNotFoundError`
 
+### G3.1.3 reliability closure (real gate scoring failures)
+
+- root-cause signal from gate artifacts was consistent on x86_64 and arm64:
+  - `availability_below_threshold`
+  - `gateway_5xx_ratio_above_threshold`
+  - `failure_drill_not_passed`
+- gate runtime profile for evaluate now uses `upstream_retry_attempts = 2` to absorb transient runner-side I/O jitter without relaxing thresholds
+- evaluate mode now prints `failure_reasons`, `threshold_checks`, and `observed` directly in job logs for faster triage
+- proxy kernel now supports bounded same-endpoint retry when all conditions are true:
+  - single-endpoint upstream
+  - retry budget remains
+  - error is transient upstream I/O (connect/read/write upstream)
+- protocol errors remain non-retryable on same endpoint; `Unsupported -> 501` contract remains unchanged
+
 ### CI hang troubleshooting checklist
 
 1. check fixture backend shutdown signal path and confirm SIGTERM exits within bounded time
@@ -132,6 +146,20 @@ The main progress of this batch:
 - 脚本标准检查新增约束：`print_stage` 若写回 `stdout` 会被门禁拦截
 - 已移除这类错误形态：
   - stage 文本拼入 JSON 路径并触发 `FileNotFoundError`
+
+### G3.1.3 可靠性收口（真实判分失败治理）
+
+- x86_64 与 arm64 的门禁产物出现一致根因：
+  - `availability_below_threshold`
+  - `gateway_5xx_ratio_above_threshold`
+  - `failure_drill_not_passed`
+- evaluate 门禁工况将 `upstream_retry_attempts` 调整为 `2`，用于吸收 runner 瞬态 I/O 抖动，不放宽阈值
+- evaluate 结束后会在 job 日志直接输出 `failure_reasons`、`threshold_checks`、`observed`，加速排障闭环
+- 代理内核新增“有界同节点重试”能力，仅在以下条件同时满足时生效：
+  - upstream 只有单节点
+  - 请求仍有重试预算
+  - 错误属于上游瞬态 I/O（connect/read/write upstream）
+- 协议错误仍不允许同节点重试，`Unsupported -> 501` 契约保持不变
 
 ### CI 卡死排障检查清单
 

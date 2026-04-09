@@ -85,6 +85,16 @@ Every run writes:
 - expected guardrail:
   - no stage text can be concatenated into JSON file paths during evaluate scoring
 
+### G3.1.3 reliability notes (standard profile unchanged)
+
+- `standard` thresholds remain unchanged; this batch does not relax SLO criteria
+- gate runtime config for evaluate now uses `upstream_retry_attempts = 2`
+- evaluate logs now print a compact diagnostics block from `result.json`:
+  - `failure_reasons`
+  - `threshold_checks`
+  - `observed`
+- in proxy kernel, single-endpoint upstreams now allow bounded same-endpoint retry for transient upstream I/O only; protocol errors are excluded
+
 ## 中文
 
 本文档定义溪流网关在 Linux `x86_64` 与 `arm64` 上的公网 API 门禁基线压测契约。
@@ -169,3 +179,13 @@ arm64 只需改为：
 - evaluate 模式的 summary 文件在脚本函数间改为显式路径传递
 - 预期防线：
   - 评分阶段不会再把 stage 文本拼接进 JSON 文件路径
+
+### G3.1.3 可靠性说明（standard 档不降级）
+
+- `standard` 阈值保持不变，本批不放宽 SLO 判分标准
+- evaluate 门禁工况配置 `upstream_retry_attempts = 2`
+- evaluate 结束后会从 `result.json` 输出精简诊断块：
+  - `failure_reasons`
+  - `threshold_checks`
+  - `observed`
+- 代理内核新增单节点有界同节点重试，仅适用于上游瞬态 I/O；协议错误不进入该重试路径
