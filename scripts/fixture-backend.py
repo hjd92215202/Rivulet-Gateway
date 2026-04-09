@@ -8,6 +8,7 @@ import json
 import socket
 import signal
 import sys
+import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -202,9 +203,20 @@ class FixtureServer(ThreadingHTTPServer):
 def main() -> int:
     args = parse_args()
     server = FixtureServer((args.bind, args.port), args.default_bytes)
+    shutdown_requested = threading.Event()
 
-    def handle_signal(_signum: int, _frame: object) -> None:
-        server.shutdown()
+    # 信号处理函数运行在主线程上下文里，不能直接调用 shutdown，
+    # 否则在 serve_forever 同线程场景下可能出现等待环导致无法退出。
+    def request_shutdown(reason: str) -> None:
+        if shutdown_requested.is_set():
+            return
+        shutdown_requested.set()
+        print(json.dumps({"event": "fixture-backend-shutdown", "reason": reason}, ensure_ascii=False))
+        sys.stdout.flush()
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    def handle_signal(signum: int, _frame: object) -> None:
+        request_shutdown(f"signal:{signum}")
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
@@ -222,6 +234,7 @@ def main() -> int:
     )
     sys.stdout.flush()
     server.serve_forever()
+    server.server_close()
     return 0
 
 
