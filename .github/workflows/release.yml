@@ -27,6 +27,9 @@ jobs:
       - name: Check repository shell scripts
         run: bash ./scripts/check-script-standards.sh
 
+      - name: Validate fixture backend SIGTERM termination
+        run: bash ./scripts/test-fixture-backend-termination.sh
+
       - name: Validate public API gate schema
         run: bash ./scripts/linux-public-api-gate.sh --mode schema-check --profile standard
 
@@ -164,6 +167,7 @@ jobs:
   systemd-lifecycle-linux-x86_64:
     name: Release Systemd Lifecycle Linux x86_64
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     needs:
       - package-linux-x86_64
     steps:
@@ -225,6 +229,7 @@ jobs:
   systemd-lifecycle-linux-arm64:
     name: Release Systemd Lifecycle Linux arm64
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
     needs:
       - package-linux-arm64
     steps:
