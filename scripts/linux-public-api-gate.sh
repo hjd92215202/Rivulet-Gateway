@@ -750,7 +750,7 @@ prepare_runtime() {
 }
 
 run_baseline_samples() {
-  local summary_path="$RUNS_DIR/baseline-summary.json"
+  local summary_path="$1"
   local sample_paths=()
   local sample_path=""
   local index=0
@@ -761,11 +761,10 @@ run_baseline_samples() {
     sleep 1
   done
   aggregate_sample_metrics "$summary_path" "${sample_paths[@]}"
-  printf '%s\n' "$summary_path"
 }
 
 run_soak_samples() {
-  local summary_path="$RUNS_DIR/soak-summary.json"
+  local summary_path="$1"
   local sample_paths=()
   local sample_path=""
   local index=0
@@ -776,11 +775,10 @@ run_soak_samples() {
     sleep 1
   done
   aggregate_sample_metrics "$summary_path" "${sample_paths[@]}"
-  printf '%s\n' "$summary_path"
 }
 
 run_failure_drill() {
-  local summary_path="$RUNS_DIR/failure-drill-summary.json"
+  local summary_path="$1"
   local business_path="$RUNS_DIR/failure-business-503.json"
   local timeout_path="$RUNS_DIR/failure-timeout.json"
   local reset_path="$RUNS_DIR/failure-reset.json"
@@ -836,8 +834,6 @@ summary["pass"] = summary["business_errors_are_upstream_only"] and summary["gate
 with open(summary_path, "w", encoding="utf-8") as fp:
     json.dump(summary, fp, ensure_ascii=False, indent=2)
 PY
-
-  printf '%s\n' "$summary_path"
 }
 
 write_schema_outputs() {
@@ -1159,30 +1155,31 @@ PY
 }
 
 run_mode() {
-  local baseline_summary=""
-  local soak_summary=""
-  local failure_summary=""
+  local baseline_summary_path="$RUNS_DIR/baseline-summary.json"
+  local soak_summary_path="$RUNS_DIR/soak-summary.json"
+  local failure_summary_path="$RUNS_DIR/failure-drill-summary.json"
   case "$MODE" in
     schema-check)
       write_schema_outputs
       ;;
     baseline)
-      baseline_summary="$(run_baseline_samples)"
-      compose_single_mode_result "baseline" "$baseline_summary"
+      # 显式传入产物路径，避免通过命令替换捕获 stdout 时被日志污染。
+      run_baseline_samples "$baseline_summary_path"
+      compose_single_mode_result "baseline" "$baseline_summary_path"
       ;;
     soak)
-      soak_summary="$(run_soak_samples)"
-      compose_single_mode_result "soak" "$soak_summary"
+      run_soak_samples "$soak_summary_path"
+      compose_single_mode_result "soak" "$soak_summary_path"
       ;;
     failure-drill)
-      failure_summary="$(run_failure_drill)"
-      compose_single_mode_result "failure-drill" "$failure_summary"
+      run_failure_drill "$failure_summary_path"
+      compose_single_mode_result "failure-drill" "$failure_summary_path"
       ;;
     evaluate)
-      baseline_summary="$(run_baseline_samples)"
-      soak_summary="$(run_soak_samples)"
-      failure_summary="$(run_failure_drill)"
-      compose_evaluate_result "$baseline_summary" "$soak_summary" "$failure_summary"
+      run_baseline_samples "$baseline_summary_path"
+      run_soak_samples "$soak_summary_path"
+      run_failure_drill "$failure_summary_path"
+      compose_evaluate_result "$baseline_summary_path" "$soak_summary_path" "$failure_summary_path"
       ;;
     *)
       fail "unsupported mode: $MODE"
