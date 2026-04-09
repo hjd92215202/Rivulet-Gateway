@@ -1283,9 +1283,7 @@ fn should_retry_same_endpoint_on_error(
     attempt: usize,
     max_attempts: usize,
 ) -> bool {
-    single_endpoint_cluster
-        && attempt + 1 < max_attempts
-        && is_transient_upstream_io_error(error)
+    single_endpoint_cluster && attempt + 1 < max_attempts && is_transient_upstream_io_error(error)
 }
 
 /// 运行时在请求失败后会回落到这里，把内部错误映射成最小可读 HTTP 响应。
@@ -3409,9 +3407,7 @@ mod tests {
             .await
             .expect("connect gateway");
         client
-            .write_all(
-                b"GET /protocol HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
-            )
+            .write_all(b"GET /protocol HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
             .await
             .expect("write request");
 
@@ -3424,7 +3420,10 @@ mod tests {
                 assert!(message.contains("status code"));
                 assert_eq!(retries, 1);
             }
-            other => panic!("expected protocol error without same-endpoint retry, got {:?}", other),
+            other => panic!(
+                "expected protocol error without same-endpoint retry, got {:?}",
+                other
+            ),
         }
 
         backend_task.await.expect("backend task");
@@ -3683,7 +3682,8 @@ mod tests {
                 policy: ProxyPolicyConfig {
                     connect_timeout_ms: None,
                     read_timeout_ms: Some(40),
-                    retry_attempts: None,
+                    // 这个用例关注读超时覆盖语义，因此把重试预算收敛到 1，避免进入同节点重试路径。
+                    retry_attempts: Some(1),
                 },
                 auth: Default::default(),
                 rate_limit: Default::default(),
