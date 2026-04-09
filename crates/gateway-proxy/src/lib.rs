@@ -313,6 +313,8 @@ impl ProxyService {
             .proxy_policy
             .or_else(cluster.proxy_policy())
             .resolve(&self.timeouts);
+        // 单节点集群没有“切到其他节点”的空间，允许在预算内对瞬态 I/O 做同节点二次尝试。
+        let single_endpoint_cluster = cluster.endpoints().len() == 1;
         let mut excluded_addresses = Vec::new();
         // 所有尝试都失败时，最终会从这里返回最后一个可解释错误。
         let mut final_outcome: Option<std::result::Result<CompletedRequest, ProxyConnectionError>> =
@@ -403,13 +405,25 @@ impl ProxyService {
                 }
                 Err(error) => {
                     // 连接失败、读超时或协议错误都先按一次失败记入节点状态。
+                    let allow_same_endpoint_retry = should_retry_same_endpoint_on_error(
+                        &error,
+                        single_endpoint_cluster,
+                        attempt,
+                        policy.upstream_retry_attempts,
+                    );
                     endpoint_state.record_failure(cluster.passive_failure_threshold());
-                    excluded_addresses.push(endpoint.address.clone());
+                    // 只有“单节点 + 瞬态 I/O + 仍有预算”时才保留当前地址，避免把唯一节点提前排除掉。
+                    if !allow_same_endpoint_retry {
+                        excluded_addresses.push(endpoint.address.clone());
+                    }
                     final_outcome = Some(Err(ProxyConnectionError {
                         error,
                         request: Some(request_context.clone()),
                         retries: attempt + 1,
                     }));
+                    if allow_same_endpoint_retry {
+                        continue;
+                    }
                 }
             }
         }
@@ -1249,6 +1263,29 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
 
 fn is_retryable_status(status_code: u16) -> bool {
     matches!(status_code, 500 | 502 | 503 | 504)
+}
+
+fn is_transient_upstream_io_error(error: &GatewayError) -> bool {
+    match error {
+        GatewayError::Io(message) => {
+            message.starts_with("connect upstream ")
+                || message.starts_with("write upstream request:")
+                || message.starts_with("flush upstream request:")
+                || message.starts_with("read upstream response ")
+        }
+        _ => false,
+    }
+}
+
+fn should_retry_same_endpoint_on_error(
+    error: &GatewayError,
+    single_endpoint_cluster: bool,
+    attempt: usize,
+    max_attempts: usize,
+) -> bool {
+    single_endpoint_cluster
+        && attempt + 1 < max_attempts
+        && is_transient_upstream_io_error(error)
 }
 
 /// 运行时在请求失败后会回落到这里，把内部错误映射成最小可读 HTTP 响应。
@@ -3166,6 +3203,232 @@ mod tests {
         let text = String::from_utf8(response).expect("utf-8 response");
         assert!(text.starts_with("HTTP/1.1 200 OK"));
         assert!(text.ends_with("retried"));
+    }
+
+    #[tokio::test]
+    async fn retries_single_endpoint_on_transient_upstream_io_error() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let accept_counter = Arc::clone(&accept_count);
+
+        let backend_task = tokio::spawn(async move {
+            let mut handlers = Vec::new();
+            while accept_counter.load(Ordering::SeqCst) < 2 {
+                let (mut stream, _) = backend.accept().await.expect("accept backend");
+                let index = accept_counter.fetch_add(1, Ordering::SeqCst);
+                handlers.push(tokio::spawn(async move {
+                    let _request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                        .await
+                        .expect("read backend request");
+                    if index == 0 {
+                        // 第一轮故意超时，触发同节点的瞬态 I/O 重试路径。
+                        sleep(Duration::from_millis(80)).await;
+                    } else {
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nretry-ok",
+                            )
+                            .await
+                            .expect("write backend response");
+                    }
+                }));
+            }
+            for handler in handlers {
+                handler.await.expect("backend connection task");
+            }
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                upstream_read_timeout_ms: 30,
+                upstream_retry_attempts: 2,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+                tls: None,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+                .expect("proxy request")
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(b"GET /retry HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
+
+        let completed = server.await.expect("gateway task");
+        backend_task.await.expect("backend task");
+
+        assert_eq!(completed.response.status_code, 200);
+        assert_eq!(completed.retries, 1);
+        assert_eq!(accept_count.load(Ordering::SeqCst), 2);
+
+        let text = String::from_utf8(response).expect("utf-8 response");
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+        assert!(text.ends_with("retry-ok"));
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_single_endpoint_on_upstream_protocol_error() {
+        let backend = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind backend");
+        let backend_addr = backend.local_addr().expect("backend addr");
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let accept_counter = Arc::clone(&accept_count);
+
+        let backend_task = tokio::spawn(async move {
+            loop {
+                let accepted = timeout(Duration::from_millis(300), backend.accept()).await;
+                let Ok(Ok((mut stream, _))) = accepted else {
+                    break;
+                };
+                accept_counter.fetch_add(1, Ordering::SeqCst);
+                let _request = HttpRequest::read_from(&mut stream, &RuntimeSettings::default())
+                    .await
+                    .expect("read backend request");
+                stream
+                    .write_all(b"HTTP/1.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await
+                    .expect("write invalid upstream response");
+            }
+        });
+
+        let config = GatewayConfigFile {
+            runtime: RuntimeConfig {
+                upstream_retry_attempts: 2,
+                ..RuntimeConfig::default()
+            },
+            listeners: vec![ListenerConfig {
+                name: "edge".into(),
+                address: "127.0.0.1:0".into(),
+                protocol: ProtocolConfig::Http1,
+                tls: None,
+            }],
+            routes: vec![RouteConfig {
+                name: "default".into(),
+                listener: "edge".into(),
+                hosts: vec!["example.test".into()],
+                path_prefixes: vec!["/".into()],
+                methods: vec![],
+                upstream: "api".into(),
+                filters: vec![],
+                policy: Default::default(),
+                auth: Default::default(),
+                rate_limit: Default::default(),
+                share: Default::default(),
+            }],
+            upstreams: vec![UpstreamConfig {
+                name: "api".into(),
+                load_balance: LoadBalanceConfig::RoundRobin,
+                health_check: None,
+                policy: Default::default(),
+                endpoints: vec![EndpointConfig {
+                    address: backend_addr.to_string(),
+                    weight: 1,
+                }],
+            }],
+        };
+
+        let service = ProxyService::new(
+            Router::from_config(&config),
+            FilterRegistry::with_defaults(),
+            UpstreamRegistry::from_config(&config),
+            config.runtime_settings(),
+        );
+
+        let gateway = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let gateway_addr = gateway.local_addr().expect("gateway addr");
+
+        let server = tokio::spawn(async move {
+            let (mut downstream, client_addr) = gateway.accept().await.expect("accept gateway");
+            service
+                .handle_connection("edge", &mut downstream, client_addr)
+                .await
+        });
+
+        let mut client = TcpStream::connect(gateway_addr)
+            .await
+            .expect("connect gateway");
+        client
+            .write_all(
+                b"GET /protocol HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("write request");
+
+        match server.await.expect("gateway task") {
+            Err(ProxyConnectionError {
+                error: GatewayError::Protocol(message),
+                retries,
+                ..
+            }) => {
+                assert!(message.contains("status code"));
+                assert_eq!(retries, 1);
+            }
+            other => panic!("expected protocol error without same-endpoint retry, got {:?}", other),
+        }
+
+        backend_task.await.expect("backend task");
+        assert_eq!(accept_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
