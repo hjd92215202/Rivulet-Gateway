@@ -428,7 +428,8 @@ graceful_shutdown_secs = 30
 downstream_read_timeout_ms = 5000
 upstream_connect_timeout_ms = 700
 upstream_read_timeout_ms = 700
-upstream_retry_attempts = 1
+# 门禁工况默认保留最小重试预算，吸收 runner 上的瞬态 I/O 抖动。
+upstream_retry_attempts = 2
 upstream_idle_pool_size = 1
 max_upstream_status_line_bytes = 8192
 max_upstream_headers = 100
@@ -1154,6 +1155,24 @@ with open(summary_path, "a", encoding="utf-8") as fp:
 PY
 }
 
+print_evaluate_diagnostics() {
+  "$PYTHON_BIN" - "$RESULT_PATH" <<'PY'
+import json
+import sys
+
+result_path = sys.argv[1]
+with open(result_path, "r", encoding="utf-8") as fp:
+    result = json.load(fp)
+
+print("# evaluate diagnostics")
+print(json.dumps({
+    "failure_reasons": result.get("failure_reasons", []),
+    "threshold_checks": result.get("threshold_checks", {}),
+    "observed": result.get("observed", {}),
+}, ensure_ascii=False))
+PY
+}
+
 run_mode() {
   local baseline_summary_path="$RUNS_DIR/baseline-summary.json"
   local soak_summary_path="$RUNS_DIR/soak-summary.json"
@@ -1275,6 +1294,7 @@ echo "result: $RESULT_PATH"
 echo "summary: $SUMMARY_PATH"
 
 if [[ "$MODE" == "evaluate" ]]; then
+  print_evaluate_diagnostics
   gate_pass="$("$PYTHON_BIN" - "$RESULT_PATH" <<'PY'
 import json
 import sys
