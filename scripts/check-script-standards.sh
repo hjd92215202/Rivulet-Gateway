@@ -37,11 +37,21 @@ check_linux_script_contract() {
     || fail "$script_path help text must declare automatic exit behavior"
 }
 
+check_print_stage_contract() {
+  local helper_path="$REPO_ROOT/scripts/lib/linux-bootstrap.sh"
+
+  grep -Fq 'print_stage() {' "$helper_path" \
+    || fail "$helper_path missing print_stage helper"
+  grep -Fq "printf '[stage] %s\\n' \"\$message\" >&2" "$helper_path" \
+    || fail "$helper_path print_stage must write stage logs to stderr"
+}
+
 main() {
   local script_path=""
 
   [[ -f "$REPO_ROOT/scripts/lib/linux-bootstrap.sh" ]] \
     || fail "shared helper scripts/lib/linux-bootstrap.sh is missing"
+  check_print_stage_contract
 
   while IFS= read -r script_path; do
     bash -n "$script_path"

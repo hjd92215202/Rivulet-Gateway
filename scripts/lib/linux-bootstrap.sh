@@ -3,7 +3,8 @@ set -euo pipefail
 
 print_stage() {
   local message="$1"
-  printf '[stage] %s\n' "$message"
+  # stage 日志统一写入 stderr，避免污染 stdout 返回值（例如命令替换场景）。
+  printf '[stage] %s\n' "$message" >&2
 }
 
 run_privileged() {
