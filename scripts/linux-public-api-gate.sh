@@ -30,6 +30,10 @@ PACKAGE_ROOT=""
 PACKAGE_BIN=""
 GATEWAY_PID=""
 BACKEND_PID=""
+GATEWAY_SHUTDOWN_RESULT="not-attempted"
+GATEWAY_SHUTDOWN_SECONDS="0"
+BACKEND_SHUTDOWN_RESULT="not-attempted"
+BACKEND_SHUTDOWN_SECONDS="0"
 DURATION_PROFILE="long"
 LEGACY_FLAT_KEYS_PRESENT="false"
 
@@ -85,17 +89,81 @@ fail() {
   exit 1
 }
 
+stop_process_bounded() {
+  local pid="$1"
+  local term_wait_secs="${2:-8}"
+  local kill_wait_secs="${3:-4}"
+  local allow_fail="${4:-false}"
+  local started_at=""
+  local elapsed=""
+  local loops=""
+
+  if [[ -z "$pid" ]]; then
+    printf '%s|%s\n' "not-running" "0"
+    return 0
+  fi
+
+  started_at="$(date +%s)"
+  if ! kill -0 "$pid" >/dev/null 2>&1; then
+    wait "$pid" >/dev/null 2>&1 || true
+    printf '%s|%s\n' "already-exited" "0"
+    return 0
+  fi
+
+  kill "$pid" >/dev/null 2>&1 || true
+  loops=$((term_wait_secs * 4))
+  for _ in $(seq 1 "$loops"); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      wait "$pid" >/dev/null 2>&1 || true
+      elapsed=$(( $(date +%s) - started_at ))
+      printf '%s|%s\n' "terminated" "$elapsed"
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  kill -KILL "$pid" >/dev/null 2>&1 || true
+  loops=$((kill_wait_secs * 4))
+  for _ in $(seq 1 "$loops"); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      wait "$pid" >/dev/null 2>&1 || true
+      elapsed=$(( $(date +%s) - started_at ))
+      printf '%s|%s\n' "killed-after-timeout" "$elapsed"
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  elapsed=$(( $(date +%s) - started_at ))
+  if [[ "$allow_fail" == "true" ]]; then
+    printf '%s|%s\n' "failed" "$elapsed"
+    return 0
+  fi
+  printf '%s|%s\n' "failed" "$elapsed"
+  return 1
+}
+
+shutdown_gateway_process() {
+  local allow_fail="${1:-false}"
+  local info=""
+  info="$(stop_process_bounded "$GATEWAY_PID" 8 4 "$allow_fail")" || return 1
+  IFS='|' read -r GATEWAY_SHUTDOWN_RESULT GATEWAY_SHUTDOWN_SECONDS <<<"$info"
+  GATEWAY_PID=""
+  return 0
+}
+
+shutdown_backend_process() {
+  local allow_fail="${1:-false}"
+  local info=""
+  info="$(stop_process_bounded "$BACKEND_PID" 8 4 "$allow_fail")" || return 1
+  IFS='|' read -r BACKEND_SHUTDOWN_RESULT BACKEND_SHUTDOWN_SECONDS <<<"$info"
+  BACKEND_PID=""
+  return 0
+}
+
 cleanup() {
-  if [[ -n "$GATEWAY_PID" ]]; then
-    kill "$GATEWAY_PID" >/dev/null 2>&1 || true
-    wait "$GATEWAY_PID" >/dev/null 2>&1 || true
-    GATEWAY_PID=""
-  fi
-  if [[ -n "$BACKEND_PID" ]]; then
-    kill "$BACKEND_PID" >/dev/null 2>&1 || true
-    wait "$BACKEND_PID" >/dev/null 2>&1 || true
-    BACKEND_PID=""
-  fi
+  shutdown_gateway_process "true" >/dev/null 2>&1 || true
+  shutdown_backend_process "true" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -408,11 +476,7 @@ start_fixture_backend() {
 }
 
 stop_fixture_backend() {
-  if [[ -n "$BACKEND_PID" ]]; then
-    kill "$BACKEND_PID" >/dev/null 2>&1 || true
-    wait "$BACKEND_PID" >/dev/null 2>&1 || true
-    BACKEND_PID=""
-  fi
+  shutdown_backend_process "false" >/dev/null || fail "fixture backend did not stop within bounded timeout"
 }
 
 start_gateway() {
@@ -1062,6 +1126,38 @@ with open(summary_path, "w", encoding="utf-8") as fp:
 PY
 }
 
+append_shutdown_diagnostics() {
+  "$PYTHON_BIN" - "$RESULT_PATH" "$SUMMARY_PATH" \
+    "$GATEWAY_SHUTDOWN_RESULT" "$GATEWAY_SHUTDOWN_SECONDS" \
+    "$BACKEND_SHUTDOWN_RESULT" "$BACKEND_SHUTDOWN_SECONDS" <<'PY'
+import json
+import sys
+
+result_path = sys.argv[1]
+summary_path = sys.argv[2]
+gateway_result = sys.argv[3]
+gateway_seconds = int(sys.argv[4])
+backend_result = sys.argv[5]
+backend_seconds = int(sys.argv[6])
+
+with open(result_path, "r", encoding="utf-8") as fp:
+    result = json.load(fp)
+
+result["process_shutdown"] = {
+    "gateway": {"result": gateway_result, "seconds": gateway_seconds},
+    "fixture_backend": {"result": backend_result, "seconds": backend_seconds},
+}
+
+with open(result_path, "w", encoding="utf-8") as fp:
+    json.dump(result, fp, ensure_ascii=False, indent=2)
+
+with open(summary_path, "a", encoding="utf-8") as fp:
+    fp.write("\n## Process Shutdown\n\n")
+    fp.write(f"- gateway: `{gateway_result}` ({gateway_seconds}s)\n")
+    fp.write(f"- fixture_backend: `{backend_result}` ({backend_seconds}s)\n")
+PY
+}
+
 run_mode() {
   local baseline_summary=""
   local soak_summary=""
@@ -1172,6 +1268,10 @@ prepare_package_binary
 prepare_runtime
 
 run_mode
+
+shutdown_gateway_process "false" >/dev/null || fail "gateway process did not stop within bounded timeout"
+shutdown_backend_process "false" >/dev/null || fail "fixture backend process did not stop within bounded timeout"
+append_shutdown_diagnostics
 
 print_stage "public api gate mode=$MODE profile=$PROFILE arch=$RESOLVED_ARCH completed"
 echo "result: $RESULT_PATH"

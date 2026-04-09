@@ -28,6 +28,9 @@ linux_package_for_command() {
     sha256sum)
       echo "coreutils"
       ;;
+    timeout)
+      echo "coreutils"
+      ;;
     python3)
       echo "python3"
       ;;

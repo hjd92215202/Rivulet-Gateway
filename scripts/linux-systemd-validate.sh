@@ -32,6 +32,12 @@ HEALTHY_STATUS=""
 WRONG_HOST_STATUS=""
 RESTART_STATUS=""
 BACKEND_DOWN_STATUS=""
+BACKEND_STOP_RESULT="not-attempted"
+BACKEND_STOP_SECONDS="0"
+SYSTEMD_START_RESULT="not-attempted"
+SYSTEMD_RESTART_RESULT="not-attempted"
+SYSTEMD_STOP_RESULT="not-attempted"
+SYSTEMCTL_TIMEOUT_SECS="45"
 
 usage() {
   cat <<'EOF'
@@ -60,6 +66,11 @@ examples:
   bash ./scripts/linux-systemd-validate.sh --artifact ./dist/linux-x86_64.tar.gz --host llmtamer.com:8080
   bash ./scripts/linux-systemd-validate.sh --tag v0.1.6 --format rpm --host llmtamer.com:8080
 EOF
+}
+
+fail() {
+  echo "linux systemd validation failed: $1" >&2
+  exit 1
 }
 
 resolve_default_tag() {
@@ -139,7 +150,7 @@ if [[ -z "$ARTIFACT_PATH" && -z "$TAG" ]]; then
   TAG="$(resolve_default_tag)"
 fi
 
-ensure_linux_commands curl tar sha256sum python3 systemctl journalctl
+ensure_linux_commands curl tar sha256sum python3 systemctl journalctl timeout
 if [[ "$FORMAT" == "rpm" ]]; then
   ensure_linux_commands rpm2cpio cpio
 fi
@@ -157,15 +168,104 @@ SUMMARY_PATH="$WORK_DIR/summary.md"
 
 mkdir -p "$DOWNLOAD_DIR" "$EXTRACT_DIR" "$LOG_DIR"
 
-cleanup() {
-  if [[ -n "$BACKEND_PID" ]]; then
-    kill "$BACKEND_PID" >/dev/null 2>&1 || true
-    wait "$BACKEND_PID" >/dev/null 2>&1 || true
+run_privileged_with_timeout() {
+  local timeout_secs="$1"
+  shift
+
+  if [[ "$(id -u)" -eq 0 ]]; then
+    timeout "${timeout_secs}s" "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    timeout "${timeout_secs}s" sudo "$@"
+  else
+    echo "need root or sudo to run privileged command: $*" >&2
+    exit 1
+  fi
+}
+
+run_systemctl_command() {
+  local action="$1"
+  local allow_fail="${2:-false}"
+  shift 2
+
+  if run_privileged_with_timeout "$SYSTEMCTL_TIMEOUT_SECS" systemctl "$action" "$@"; then
+    return 0
   fi
 
+  if [[ "$allow_fail" == "true" ]]; then
+    return 0
+  fi
+  fail "systemctl $action exceeded timeout ${SYSTEMCTL_TIMEOUT_SECS}s"
+}
+
+stop_process_bounded() {
+  local pid="$1"
+  local term_wait_secs="${2:-8}"
+  local kill_wait_secs="${3:-4}"
+  local allow_fail="${4:-false}"
+  local started_at=""
+  local elapsed=""
+  local loops=""
+
+  if [[ -z "$pid" ]]; then
+    printf '%s|%s\n' "not-running" "0"
+    return 0
+  fi
+
+  started_at="$(date +%s)"
+  if ! kill -0 "$pid" >/dev/null 2>&1; then
+    wait "$pid" >/dev/null 2>&1 || true
+    printf '%s|%s\n' "already-exited" "0"
+    return 0
+  fi
+
+  kill "$pid" >/dev/null 2>&1 || true
+  loops=$((term_wait_secs * 4))
+  for _ in $(seq 1 "$loops"); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      wait "$pid" >/dev/null 2>&1 || true
+      elapsed=$(( $(date +%s) - started_at ))
+      printf '%s|%s\n' "terminated" "$elapsed"
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  kill -KILL "$pid" >/dev/null 2>&1 || true
+  loops=$((kill_wait_secs * 4))
+  for _ in $(seq 1 "$loops"); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      wait "$pid" >/dev/null 2>&1 || true
+      elapsed=$(( $(date +%s) - started_at ))
+      printf '%s|%s\n' "killed-after-timeout" "$elapsed"
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  elapsed=$(( $(date +%s) - started_at ))
+  if [[ "$allow_fail" == "true" ]]; then
+    printf '%s|%s\n' "failed" "$elapsed"
+    return 0
+  fi
+  printf '%s|%s\n' "failed" "$elapsed"
+  return 1
+}
+
+shutdown_backend_process() {
+  local allow_fail="${1:-false}"
+  local info=""
+  info="$(stop_process_bounded "$BACKEND_PID" 8 4 "$allow_fail")" || return 1
+  IFS='|' read -r BACKEND_STOP_RESULT BACKEND_STOP_SECONDS <<<"$info"
+  BACKEND_PID=""
+  return 0
+}
+
+cleanup() {
+  shutdown_backend_process "true" >/dev/null 2>&1 || true
+
   if [[ -n "$DEPLOY_UNIT_PATH" ]]; then
-    run_privileged systemctl stop "$UNIT_NAME" >/dev/null 2>&1 || true
-    run_privileged systemctl disable "$UNIT_NAME" >/dev/null 2>&1 || true
+    run_systemctl_command stop "true" "$UNIT_NAME" >/dev/null 2>&1 || true
+    run_systemctl_command disable "true" "$UNIT_NAME" >/dev/null 2>&1 || true
   fi
 
   if [[ -n "$UNIT_NAME" ]] && command -v journalctl >/dev/null 2>&1; then
@@ -174,7 +274,7 @@ cleanup() {
 
   if [[ -n "$DEPLOY_UNIT_PATH" ]]; then
     run_privileged rm -f "$DEPLOY_UNIT_PATH" || true
-    run_privileged systemctl daemon-reload || true
+    run_systemctl_command daemon-reload "true" >/dev/null 2>&1 || true
   fi
 
   if [[ -n "$DEPLOY_ROOT" ]]; then
@@ -286,7 +386,7 @@ assert_file() {
 }
 
 assert_systemd_available() {
-  if ! run_privileged systemctl list-unit-files >/dev/null 2>&1; then
+  if ! run_privileged_with_timeout "$SYSTEMCTL_TIMEOUT_SECS" systemctl list-unit-files >/dev/null 2>&1; then
     echo "systemctl is present but cannot talk to a running systemd manager" >&2
     exit 1
   fi
@@ -364,7 +464,7 @@ prepare_validation_layout() {
     -e "s#^ExecStart=.*#ExecStart=$DEPLOY_BIN $DEPLOY_CONFIG#" \
     "$PACKAGE_UNIT" >"$generated_unit"
   run_privileged install -m 0644 "$generated_unit" "$DEPLOY_UNIT_PATH"
-  run_privileged systemctl daemon-reload
+  run_systemctl_command daemon-reload "false"
 }
 
 wait_for_status() {
@@ -426,7 +526,8 @@ python3 "$REPO_ROOT/scripts/fixture-backend.py" \
 BACKEND_PID="$!"
 
 print_stage "starting validation systemd unit"
-run_privileged systemctl start "$UNIT_NAME"
+run_systemctl_command start "false" "$UNIT_NAME"
+SYSTEMD_START_RESULT="ok"
 
 print_stage "checking healthy route returns 200"
 HEALTHY_STATUS="$(wait_for_status "200" "$HOST_HEADER" "/fixture/default")"
@@ -435,19 +536,19 @@ print_stage "checking wrong host returns 404"
 WRONG_HOST_STATUS="$(wait_for_status "404" "invalid.example.test" "/fixture/default" 8 0.25 2 || true)"
 
 print_stage "restarting validation systemd unit"
-run_privileged systemctl restart "$UNIT_NAME"
+run_systemctl_command restart "false" "$UNIT_NAME"
+SYSTEMD_RESTART_RESULT="ok"
 
 print_stage "checking route still returns 200 after restart"
 RESTART_STATUS="$(wait_for_status "200" "$HOST_HEADER" "/fixture/default")"
 
 print_stage "stopping bundled backend to verify degraded 502 path"
-kill "$BACKEND_PID" >/dev/null 2>&1 || true
-wait "$BACKEND_PID" >/dev/null 2>&1 || true
-BACKEND_PID=""
+shutdown_backend_process "false" >/dev/null || fail "fixture backend did not stop within bounded timeout"
 BACKEND_DOWN_STATUS="$(wait_for_status "502" "$HOST_HEADER" "/fixture/default" 5 0.3 8 || true)"
 
 print_stage "stopping validation systemd unit"
-run_privileged systemctl stop "$UNIT_NAME"
+run_systemctl_command stop "false" "$UNIT_NAME"
+SYSTEMD_STOP_RESULT="ok"
 
 print_stage "writing summary report"
 cat >"$SUMMARY_PATH" <<EOF
@@ -477,6 +578,18 @@ cat >"$SUMMARY_PATH" <<EOF
 - Wrong-host status: \`$WRONG_HOST_STATUS\`
 - Restart healthy status: \`$RESTART_STATUS\`
 - Backend-down status: \`$BACKEND_DOWN_STATUS\`
+
+## Systemd Control
+
+- systemctl timeout budget: \`${SYSTEMCTL_TIMEOUT_SECS}s\`
+- systemd start result: \`$SYSTEMD_START_RESULT\`
+- systemd restart result: \`$SYSTEMD_RESTART_RESULT\`
+- systemd stop result: \`$SYSTEMD_STOP_RESULT\`
+
+## Process Shutdown
+
+- fixture backend stop result: \`$BACKEND_STOP_RESULT\`
+- fixture backend stop seconds: \`$BACKEND_STOP_SECONDS\`
 
 ## Logs
 
