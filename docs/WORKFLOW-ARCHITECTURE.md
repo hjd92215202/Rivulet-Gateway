@@ -47,6 +47,8 @@ flowchart TD
 - Both Linux architectures are mandatory.
 - Any public-api gate failure blocks downstream publish chain (`supply-chain` in CI, `publish` in release).
 - Gate jobs now run with explicit timeout and long-run evaluate windows.
+- `script-standards` now includes fixture backend SIGTERM termination regression check.
+- `systemd-lifecycle-linux-x86_64` and `systemd-lifecycle-linux-arm64` now run with workflow-level timeout guards.
 
 ### Audit artifacts
 
@@ -56,6 +58,17 @@ Public API gate jobs upload:
 - `summary.md`
 
 These artifacts include architecture, duration profile, request-floor checks, and explicit failure reasons.
+
+### CI hang containment boundaries
+
+- fixture process layer:
+  - bounded stop contract (`TERM` -> bounded wait -> `KILL` -> explicit fail)
+- script execution layer:
+  - key `systemctl` calls wrapped with command timeout in Linux systemd validation
+- workflow orchestration layer:
+  - explicit `timeout-minutes` on long-running systemd lifecycle jobs
+- diagnosis expectation:
+  - failures should surface as actionable diagnostics, not silent 6h hangs
 
 ## 中文
 
@@ -79,6 +92,8 @@ These artifacts include architecture, duration profile, request-floor checks, an
   - CI 阻断 `supply-chain`
   - release 阻断 `publish`
 - 门禁 job 已接入明确超时与长跑 evaluate 窗口。
+- `script-standards` 已加入 fixture backend 的 SIGTERM 退出回归校验。
+- `systemd-lifecycle-linux-x86_64` 与 `systemd-lifecycle-linux-arm64` 已增加 workflow 级超时保护。
 
 ### 审计产物
 
@@ -88,3 +103,14 @@ These artifacts include architecture, duration profile, request-floor checks, an
 - `summary.md`
 
 产物中包含架构、时长档位、最小样本门槛检查与明确失败原因，便于回溯审计。
+
+### CI 卡死治理边界
+
+- fixture 进程层：
+  - 有界停止契约（`TERM` -> 有限等待 -> `KILL` -> 显式失败）
+- 脚本执行层：
+  - Linux systemd 验证中的关键 `systemctl` 调用都带命令级超时
+- workflow 编排层：
+  - 长耗时 systemd lifecycle job 配置 `timeout-minutes`
+- 诊断目标：
+  - 失败必须可解释、可复盘，不再出现静默 6 小时挂死

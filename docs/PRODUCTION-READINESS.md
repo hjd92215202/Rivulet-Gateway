@@ -36,6 +36,25 @@ The main progress of this batch:
 - failures now include explicit reasons (threshold miss vs sample-floor miss)
 - result contract now includes `arch`, `duration_profile`, `request_floor_checks`
 
+### G3.1.1 stability closure (CI hang containment)
+
+- fixed fixture backend SIGTERM deadlock class:
+  - signal handler no longer calls `server.shutdown()` in the same thread
+  - shutdown is triggered and executed from a separate thread
+- Linux validation scripts now enforce bounded background shutdown:
+  - `TERM` with bounded polling
+  - fallback `KILL` when timeout is exceeded
+  - explicit failure when process still cannot exit
+- systemd lifecycle script now wraps key `systemctl` actions with command timeout guards
+- CI/release systemd lifecycle jobs now have explicit workflow-level `timeout-minutes`
+
+### CI hang troubleshooting checklist
+
+1. check fixture backend shutdown signal path and confirm SIGTERM exits within bounded time
+2. check script summary/result for process-shutdown diagnostics (`result`, `seconds`)
+3. check whether `systemctl` timeout boundary was hit in lifecycle summary
+4. check workflow timeout vs script timeout to locate where blocking occurred
+
 ### Current limits
 
 - protocol remains HTTP/1.1 only
@@ -85,6 +104,25 @@ The main progress of this batch:
   - `MIN_TOTAL_REQUESTS_SOAK`
 - 失败原因可区分“阈值不达标”与“样本不足”
 - 输出契约新增 `arch`、`duration_profile`、`request_floor_checks`
+
+### G3.1.1 稳定性收口（CI 卡死治理）
+
+- 已修复 fixture backend 的 SIGTERM 死锁类风险：
+  - 信号处理器不再同线程直接调用 `server.shutdown()`
+  - 由独立线程执行 shutdown，避免 `serve_forever` 同线程互锁
+- Linux 验证脚本新增有界后台停止机制：
+  - 先 `TERM` + 有限轮询
+  - 超时后自动 `KILL`
+  - 仍无法退出时显式失败，不再无限等待
+- systemd 生命周期脚本对关键 `systemctl` 操作增加命令级超时保护
+- CI/release 的 systemd lifecycle job 增加 workflow 级 `timeout-minutes` 兜底
+
+### CI 卡死排障检查清单
+
+1. 先确认 fixture backend 的 SIGTERM 退出链路是否在阈值内完成
+2. 查看脚本 `summary/result` 中的进程停止诊断字段（`result`、`seconds`）
+3. 检查 lifecycle summary 是否命中 `systemctl` 超时边界
+4. 对照 workflow 超时与脚本超时，定位阻塞发生层级
 
 ### 当前硬边界
 

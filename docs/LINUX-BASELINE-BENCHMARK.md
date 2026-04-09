@@ -67,6 +67,17 @@ Every run writes:
 - `request_floor_checks`
 - explicit `failure_reasons`
 
+### Shutdown boundary and anti-hang diagnostics
+
+- gate runtime now enforces bounded background process shutdown:
+  - `TERM` with bounded wait
+  - fallback `KILL` on timeout
+  - explicit failure when process still cannot exit
+- `result.json` now carries `process_shutdown` diagnostics (gateway and fixture backend)
+- `summary.md` now appends process shutdown result and elapsed seconds
+- when used together with `linux-systemd-validate.sh`, key `systemctl` actions are guarded by command timeout
+- CI/release also applies workflow-level timeout to avoid indefinite hangs
+
 ## 中文
 
 本文档定义溪流网关在 Linux `x86_64` 与 `arm64` 上的公网 API 门禁基线压测契约。
@@ -133,3 +144,14 @@ arm64 只需改为：
 - `duration_profile`（当前为 `long`）
 - `request_floor_checks`
 - 明确的 `failure_reasons`
+
+### 停止边界与防挂死诊断
+
+- 门禁运行时已强制后台进程有界停止：
+  - 先 `TERM` + 有限等待
+  - 超时后自动 `KILL`
+  - 仍无法退出则显式失败
+- `result.json` 新增 `process_shutdown` 诊断字段（gateway 与 fixture backend）
+- `summary.md` 追加进程停止结果与耗时秒数
+- 与 `linux-systemd-validate.sh` 配合时，关键 `systemctl` 操作带命令级超时保护
+- CI/release 侧同时有 workflow 级超时兜底，避免无限挂死
