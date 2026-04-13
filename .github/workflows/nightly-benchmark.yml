@@ -7,10 +7,12 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
   GATEWAY_DISABLE_ACCESS_LOG: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   benchmark-linux-x86_64:
@@ -34,3 +36,181 @@ jobs:
           name: rivulet-benchmark-linux-x86_64
           path: target/bench/*.csv
           if-no-files-found: error
+
+  package-linux-x86_64:
+    name: Nightly Package Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build release binary
+        run: cargo build -p gateway-main --release --target x86_64-unknown-linux-gnu
+
+      - name: Build Linux tarball
+        run: bash ./scripts/package.sh --target x86_64-unknown-linux-gnu --format tar.gz --skip-build
+
+      - name: Upload Linux x86_64 nightly package
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-nightly-linux-x86_64
+          path: dist/x86_64-unknown-linux-gnu/*.tar.gz
+          if-no-files-found: error
+
+  package-linux-arm64:
+    name: Nightly Package Linux arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build release binary
+        run: cargo build -p gateway-main --release --target aarch64-unknown-linux-gnu
+
+      - name: Build Linux arm64 tarball
+        run: bash ./scripts/package.sh --target aarch64-unknown-linux-gnu --format tar.gz --skip-build
+
+      - name: Upload Linux arm64 nightly package
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-nightly-linux-arm64
+          path: dist/aarch64-unknown-linux-gnu/*.tar.gz
+          if-no-files-found: error
+
+  public-api-observe-linux-x86_64:
+    name: Nightly Public API Observe Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    needs:
+      - package-linux-x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Linux x86_64 nightly package
+        uses: actions/download-artifact@v6
+        with:
+          name: rivulet-nightly-linux-x86_64
+          path: nightly-public-api-assets/x86_64
+
+      - name: Resolve Linux x86_64 nightly tarball
+        id: artifacts
+        run: |
+          tarball="$(find nightly-public-api-assets/x86_64 -type f -name '*.tar.gz' | head -n 1)"
+          if [[ -z "$tarball" ]]; then
+            echo "failed to resolve Linux x86_64 nightly tarball" >&2
+            exit 1
+          fi
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Run nightly public API observe gate
+        run: |
+          bash ./scripts/linux-public-api-gate.sh \
+            --mode evaluate \
+            --profile observe \
+            --arch linux-x86_64 \
+            --artifact "${{ steps.artifacts.outputs.tarball }}" \
+            --format tar.gz \
+            --gateway-port 19184 \
+            --backend-port 20184 \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-public-api-observe-x86"
+
+      - name: Upload Linux x86_64 observe report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-nightly-public-api-observe-linux-x86_64
+          path: ${{ runner.temp }}/rivulet-nightly-public-api-observe-x86
+          if-no-files-found: ignore
+
+  public-api-observe-linux-arm64:
+    name: Nightly Public API Observe Linux arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    needs:
+      - package-linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Linux arm64 nightly package
+        uses: actions/download-artifact@v6
+        with:
+          name: rivulet-nightly-linux-arm64
+          path: nightly-public-api-assets/arm64
+
+      - name: Resolve Linux arm64 nightly tarball
+        id: artifacts
+        run: |
+          tarball="$(find nightly-public-api-assets/arm64 -type f -name '*.tar.gz' | head -n 1)"
+          if [[ -z "$tarball" ]]; then
+            echo "failed to resolve Linux arm64 nightly tarball" >&2
+            exit 1
+          fi
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Run nightly public API observe gate
+        run: |
+          bash ./scripts/linux-public-api-gate.sh \
+            --mode evaluate \
+            --profile observe \
+            --arch linux-arm64 \
+            --artifact "${{ steps.artifacts.outputs.tarball }}" \
+            --format tar.gz \
+            --gateway-port 19284 \
+            --backend-port 20284 \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-public-api-observe-arm"
+
+      - name: Upload Linux arm64 observe report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-nightly-public-api-observe-linux-arm64
+          path: ${{ runner.temp }}/rivulet-nightly-public-api-observe-arm
+          if-no-files-found: ignore
+
+  public-api-calibration-summary:
+    name: Nightly Public API Calibration Summary
+    runs-on: ubuntu-24.04
+    needs:
+      - public-api-observe-linux-x86_64
+      - public-api-observe-linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download observe reports
+        uses: actions/download-artifact@v6
+        with:
+          path: nightly-public-api-observe-artifacts
+
+      - name: Build calibration report
+        run: |
+          mapfile -t results < <(find nightly-public-api-observe-artifacts -type f -name 'result.json' | sort)
+          if [[ "${#results[@]}" -eq 0 ]]; then
+            echo "no result.json files found for calibration report" >&2
+            exit 1
+          fi
+          bash ./scripts/public-api-calibration-report.sh \
+            --profile standard \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-calibration" \
+            --inputs "${results[@]}"
+
+      - name: Upload calibration and streak reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-nightly-public-api-calibration
+          path: |
+            ${{ runner.temp }}/rivulet-nightly-calibration
+          if-no-files-found: ignore
