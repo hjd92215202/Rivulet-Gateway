@@ -47,6 +47,12 @@ Newly closed in G3.1.3:
 - gate fixture runtime for standard evaluate uses retry budget `2` (without threshold relaxation)
 - proxy kernel supports bounded same-endpoint retry for transient upstream I/O in single-endpoint clusters
 
+Newly closed in G3.1.4:
+
+- single-endpoint retryable upstream status (`500/502/503/504`) now preserves pass-through semantics and no longer downgrades into gateway-side 5xx by exclusion fallback
+- multi-endpoint retry behavior remains unchanged for retryable upstream status
+- failure-drill outputs now include auditable diagnostics (`business_total_requests`, `business_gateway_5xx_ratio`, gateway fault breakdown and key error counters)
+
 Remaining in Milestone 2:
 
 - threshold tuning iteration on stable Linux runners
@@ -115,6 +121,12 @@ G3.1.3 新增收口：
 - public-api gate evaluate 日志直接输出关键诊断字段（`failure_reasons` / `threshold_checks` / `observed`）
 - standard evaluate 工况重试预算提升到 `2`（不放宽阈值）
 - 代理内核在单节点 upstream 场景支持上游瞬态 I/O 的有界同节点重试
+
+G3.1.4 新增收口：
+
+- 单节点 retryable 上游状态（`500/502/503/504`）改为保持透传语义，不再因“排除唯一节点”的回退路径被误转成网关侧 5xx
+- 多节点场景对 retryable 上游状态的重试/切换行为保持不变
+- failure-drill 产物新增可审计诊断字段（`business_total_requests`、`business_gateway_5xx_ratio`、网关故障拆分与关键错误计数）
 
 里程碑 2 剩余项：
 

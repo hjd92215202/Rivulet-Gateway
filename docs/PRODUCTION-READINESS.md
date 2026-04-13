@@ -70,6 +70,18 @@ The main progress of this batch:
   - error is transient upstream I/O (connect/read/write upstream)
 - protocol errors remain non-retryable on same endpoint; `Unsupported -> 501` contract remains unchanged
 
+### G3.1.4 failure-drill closure (without relaxing standard)
+
+- CI failures were narrowed to `failure_drill_not_passed` on both Linux x86_64 and arm64, while availability/latency/gateway ratio checks already passed
+- proxy kernel now preserves pass-through semantics for retryable upstream status (`500/502/503/504`) in single-endpoint clusters
+- retryable-status retry/switch semantics for multi-endpoint clusters remain unchanged
+- gate outputs now include failure-drill diagnostics for direct CI triage:
+  - `business_total_requests`
+  - `business_gateway_5xx_ratio`
+  - `gateway_fault_breakdown`
+  - `gateway_fault_network_errors_total`
+- this batch does not relax `standard` profile thresholds and does not change blocking semantics in CI/release
+
 ### CI hang troubleshooting checklist
 
 1. check fixture backend shutdown signal path and confirm SIGTERM exits within bounded time
@@ -160,6 +172,18 @@ The main progress of this batch:
   - 请求仍有重试预算
   - 错误属于上游瞬态 I/O（connect/read/write upstream）
 - 协议错误仍不允许同节点重试，`Unsupported -> 501` 契约保持不变
+
+### G3.1.4 failure-drill 收口（不放宽 standard）
+
+- CI 失败已收敛为双架构一致的 `failure_drill_not_passed`，可用性/延迟/网关 5xx 比例检查均已通过
+- 代理内核在单节点集群下对 retryable 上游状态（`500/502/503/504`）改为优先保持透传语义
+- 多节点集群对 retryable 状态的重试与切换行为保持不变
+- gate 产物补齐 failure-drill 诊断字段，便于在 Actions 日志直接判因：
+  - `business_total_requests`
+  - `business_gateway_5xx_ratio`
+  - `gateway_fault_breakdown`
+  - `gateway_fault_network_errors_total`
+- 本批不放宽 `standard` 阈值，不改变 CI/release 阻断语义
 
 ### CI 卡死排障检查清单
 

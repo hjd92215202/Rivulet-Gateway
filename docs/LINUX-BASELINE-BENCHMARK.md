@@ -95,6 +95,18 @@ Every run writes:
   - `observed`
 - in proxy kernel, single-endpoint upstreams now allow bounded same-endpoint retry for transient upstream I/O only; protocol errors are excluded
 
+### G3.1.4 failure-drill diagnostics and pass-through fix
+
+- single-endpoint retryable upstream status (`500/502/503/504`) now keeps pass-through semantics and avoids gateway-5xx contamination from exclusion fallback
+- multi-endpoint retryable-status retry behavior remains unchanged
+- failure-drill result contract now exposes additional audit fields:
+  - `business_total_requests`
+  - `business_gateway_5xx_ratio`
+  - `business_network_errors`
+  - `gateway_fault_breakdown`
+  - `gateway_fault_network_errors_total`
+- evaluate diagnostics log now appends a focused `failure_drill` summary block for direct CI troubleshooting
+
 ## 中文
 
 本文档定义溪流网关在 Linux `x86_64` 与 `arm64` 上的公网 API 门禁基线压测契约。
@@ -189,3 +201,15 @@ arm64 只需改为：
   - `threshold_checks`
   - `observed`
 - 代理内核新增单节点有界同节点重试，仅适用于上游瞬态 I/O；协议错误不进入该重试路径
+
+### G3.1.4 failure-drill 诊断增强与透传修复
+
+- 单节点 retryable 上游状态（`500/502/503/504`）恢复“业务状态优先透传”语义，避免因排除唯一节点导致的网关 5xx 污染
+- 多节点场景对 retryable 状态的重试行为保持不变
+- failure-drill 产物新增审计字段：
+  - `business_total_requests`
+  - `business_gateway_5xx_ratio`
+  - `business_network_errors`
+  - `gateway_fault_breakdown`
+  - `gateway_fault_network_errors_total`
+- evaluate 诊断日志追加 `failure_drill` 摘要块，便于在 CI 直接定位失败原因
