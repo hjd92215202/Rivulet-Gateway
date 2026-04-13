@@ -206,6 +206,26 @@ jobs:
             --output-dir "$RUNNER_TEMP/rivulet-nightly-calibration" \
             --inputs "${results[@]}"
 
+      - name: Build CI streak report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash ./scripts/public-api-gate-streak-report.sh \
+            --repo "${{ github.repository }}" \
+            --workflow ci \
+            --window 40 \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-streak-ci"
+
+      - name: Build release streak report
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash ./scripts/public-api-gate-streak-report.sh \
+            --repo "${{ github.repository }}" \
+            --workflow release \
+            --window 40 \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-streak-release"
+
       - name: Upload calibration and streak reports
         if: always()
         uses: actions/upload-artifact@v6
@@ -213,4 +233,6 @@ jobs:
           name: rivulet-nightly-public-api-calibration
           path: |
             ${{ runner.temp }}/rivulet-nightly-calibration
+            ${{ runner.temp }}/rivulet-nightly-streak-ci
+            ${{ runner.temp }}/rivulet-nightly-streak-release
           if-no-files-found: ignore
