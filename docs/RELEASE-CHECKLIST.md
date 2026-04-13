@@ -28,6 +28,8 @@ Release target: `v<version>`
 - [ ] Release systemd lifecycle gate is green on Linux x86_64 and Linux arm64
 - [ ] Release workflow creates `SHA256SUMS.txt`
 - [ ] Release workflow creates `SHA256SUMS.sig` and `SHA256SUMS.pem`
+- [ ] Release workflow creates detached signature pairs for every release asset (`<asset>.sig` + `<asset>.pem`)
+- [ ] Release workflow blocks publish when detached signature verification fails
 - [ ] Release workflow uploads `SBOM.spdx.json`
 - [ ] Supply-chain provenance attestation job succeeds
 - [ ] GitHub Release page is created
@@ -42,6 +44,7 @@ Release target: `v<version>`
 - [ ] `SHA256SUMS.txt`
 - [ ] `SHA256SUMS.sig`
 - [ ] `SHA256SUMS.pem`
+- [ ] Each published asset has matching `.sig` and `.pem` files
 - [ ] `SBOM.spdx.json`
 
 ### Post-Release Notes
@@ -84,6 +87,8 @@ Release target: `v<version>`
 - [ ] release workflow 中 Linux x86_64 与 Linux arm64 的 systemd 生命周期门禁通过
 - [ ] release workflow 生成了 `SHA256SUMS.txt`
 - [ ] release workflow 生成了 `SHA256SUMS.sig` 和 `SHA256SUMS.pem`
+- [ ] release workflow 为每个发布资产生成 detached 签名对（`<asset>.sig` + `<asset>.pem`）
+- [ ] detached 验签失败时 release workflow 会阻断 publish
 - [ ] release workflow 上传了 `SBOM.spdx.json`
 - [ ] supply-chain provenance 证明步骤通过
 - [ ] GitHub Release 页面已创建
@@ -98,6 +103,7 @@ Release target: `v<version>`
 - [ ] `SHA256SUMS.txt`
 - [ ] `SHA256SUMS.sig`
 - [ ] `SHA256SUMS.pem`
+- [ ] 每个发布资产都带有对应的 `.sig` 与 `.pem`
 - [ ] `SBOM.spdx.json`
 
 ### 发布后记录

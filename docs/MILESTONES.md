@@ -53,11 +53,16 @@ Newly closed in G3.1.4:
 - multi-endpoint retry behavior remains unchanged for retryable upstream status
 - failure-drill outputs now include auditable diagnostics (`business_total_requests`, `business_gateway_5xx_ratio`, gateway fault breakdown and key error counters)
 
+Newly closed in G3.2:
+
+- release publish pipeline now signs every release asset with detached signature and certificate outputs (`<asset>.sig` + `<asset>.pem`)
+- release publish job now hard-blocks on detached signature verification before upload
+- CI/release supply-chain workflows now enforce signature-contract checks and use Node 24 compatible JavaScript action runtime setting
+
 Remaining in Milestone 2:
 
 - threshold tuning iteration on stable Linux runners
 - disposable full lifecycle coverage expansion
-- per-asset detached signature hardening
 
 ### Milestone 3: Public Internet scale hardening
 
@@ -128,11 +133,16 @@ G3.1.4 新增收口：
 - 多节点场景对 retryable 上游状态的重试/切换行为保持不变
 - failure-drill 产物新增可审计诊断字段（`business_total_requests`、`business_gateway_5xx_ratio`、网关故障拆分与关键错误计数）
 
+G3.2 新增收口：
+
+- release 发布链路已对每个发布资产生成 detached 签名与证书产物（`<asset>.sig` + `<asset>.pem`）
+- release publish 在上传前新增逐产物验签硬门禁，验签失败会直接阻断发布
+- CI/release supply-chain 流程新增签名契约检查，并启用 Node 24 兼容 JavaScript action 运行时设置
+
 里程碑 2 剩余项：
 
 - 在稳定 Linux runner 上持续校准阈值
 - 一次性环境全生命周期验证规模扩展
-- 发布逐产物 detached 签名加固
 
 ### 里程碑 3：公网规模化加固
 
