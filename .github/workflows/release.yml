@@ -453,14 +453,13 @@ jobs:
           cp publish-assets/SHA256SUMS.txt.sig publish-assets/SHA256SUMS.sig
           cp publish-assets/SHA256SUMS.txt.pem publish-assets/SHA256SUMS.pem
 
-      - name: Verify SHA256 manifest signature
+      - name: Verify detached signatures for release assets
         run: |
-          cosign verify-blob \
-            --certificate publish-assets/SHA256SUMS.pem \
-            --signature publish-assets/SHA256SUMS.sig \
+          bash ./scripts/verify-release-signatures.sh \
+            --assets-dir publish-assets \
+            --mode verify \
             --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/release.yml@.*$" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            publish-assets/SHA256SUMS.txt
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 
       - name: Attest release provenance
         uses: actions/attest-build-provenance@v2
