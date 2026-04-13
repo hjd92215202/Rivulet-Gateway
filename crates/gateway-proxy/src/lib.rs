@@ -2686,6 +2686,8 @@ mod tests {
         let config = GatewayConfigFile {
             runtime: RuntimeConfig {
                 upstream_read_timeout_ms: 50,
+                // 该用例只验证“首轮读超时”语义，显式关闭重试避免被同节点 I/O 重试路径影响。
+                upstream_retry_attempts: 1,
                 ..RuntimeConfig::default()
             },
             listeners: vec![ListenerConfig {
