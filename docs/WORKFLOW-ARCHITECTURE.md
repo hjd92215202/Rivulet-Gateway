@@ -52,7 +52,13 @@ flowchart TD
     REL_DX --> REL_PUB
     REL_DA --> REL_PUB
 
-    NB --> NB_RUN["benchmark collection"]
+    NB --> NB_BM["benchmark collection x86_64"]
+    NB --> NB_PX["nightly package x86_64"]
+    NB --> NB_PA["nightly package arm64"]
+    NB_PX --> NB_OX["public-api observe evaluate x86_64"]
+    NB_PA --> NB_OA["public-api observe evaluate arm64"]
+    NB_OX --> NB_SUM["calibration + streak summary"]
+    NB_OA --> NB_SUM
 ```
 
 ### Blocking policy
@@ -62,6 +68,7 @@ flowchart TD
 - Any public-api gate failure blocks downstream publish chain (`supply-chain` in CI, `publish` in release).
 - Release disposable lifecycle gates (`tar.gz` full + `rpm` install-uninstall) are hard blockers before `publish`.
 - CI disposable lifecycle contract checks are lightweight pre-gates to catch script-interface drift before release.
+- Nightly now collects observe samples on both Linux architectures and emits calibration/streak reports for threshold tuning.
 - Gate jobs now run with explicit timeout and long-run evaluate windows.
 - `script-standards` now includes fixture backend SIGTERM termination regression check.
 - `script-standards` now also enforces `print_stage` -> `stderr` log channel contract.
@@ -82,6 +89,15 @@ Release disposable lifecycle jobs upload:
 - `summary.md`
 
 These artifacts include stage-level status for install/upgrade/rollback/uninstall and cleanup diagnostics.
+
+Nightly calibration summary uploads:
+
+- `calibration-report.json`
+- `calibration-report.md`
+- `streak-report.json`
+- `streak-report.md`
+
+These artifacts support manual threshold tuning and milestone-2 closure tracking (10 consecutive dual-arch green runs).
 
 ### CI hang containment boundaries
 
@@ -118,6 +134,7 @@ These artifacts include stage-level status for install/upgrade/rollback/uninstal
   - release 阻断 `publish`
 - release 已新增一次性环境全生命周期门禁（`tar.gz` 全流程 + `rpm` 安装/卸载），任一失败都会阻断 `publish`。
 - CI 已新增一次性环境全生命周期脚本的轻量契约检查，用于提前发现脚本接口漂移。
+- nightly 已新增双架构 observe 采样与校准/连续全绿统计汇总，用于阈值校准证据沉淀。
 - 门禁 job 已接入明确超时与长跑 evaluate 窗口。
 - `script-standards` 已加入 fixture backend 的 SIGTERM 退出回归校验。
 - `script-standards` 新增 `print_stage` 必须写 `stderr` 的通道约束。
@@ -138,6 +155,15 @@ These artifacts include stage-level status for install/upgrade/rollback/uninstal
 - `summary.md`
 
 产物中包含安装/升级/回滚/卸载分阶段状态与清理诊断字段，便于发布审计和回归定位。
+
+nightly 校准汇总 job 固定上传：
+
+- `calibration-report.json`
+- `calibration-report.md`
+- `streak-report.json`
+- `streak-report.md`
+
+产物用于“先报告后调阈值”的校准闭环和“连续 10 次双架构全绿”收口跟踪。
 
 ### CI 卡死治理边界
 

@@ -67,6 +67,56 @@ Every run writes:
 - `request_floor_checks`
 - explicit `failure_reasons`
 
+### G3.4 calibration report pipeline
+
+Nightly now includes architecture observe sampling and calibration aggregation.
+
+Calibration script:
+
+```bash
+bash ./scripts/public-api-calibration-report.sh \
+  --profile standard \
+  --output-dir ./target/public-api-calibration/manual \
+  --inputs ./result-x86.json ./result-arm.json
+```
+
+Outputs:
+
+- `calibration-report.json`
+- `calibration-report.md`
+
+Report fields include:
+
+- per-architecture distribution summary for `availability/gateway_5xx_ratio/p95/p99` (`min/median/p90/p95/max`)
+- delta against current `standard` thresholds
+- sample counts and latest trend rows
+- manual review items (no automatic threshold rewrite)
+
+### G3.4 streak report pipeline
+
+Streak script (report-only, non-blocking):
+
+```bash
+bash ./scripts/public-api-gate-streak-report.sh \
+  --repo <owner/name> \
+  --workflow ci \
+  --window 40 \
+  --output-dir ./target/public-api-streak/ci
+```
+
+Release streak:
+
+```bash
+--workflow release
+```
+
+Outputs:
+
+- `streak-report.json`
+- `streak-report.md`
+
+The closure indicator tracks whether consecutive dual-architecture success reaches 10.
+
 ### Shutdown boundary and anti-hang diagnostics
 
 - gate runtime now enforces bounded background process shutdown:
@@ -106,6 +156,15 @@ Every run writes:
   - `gateway_fault_breakdown`
   - `gateway_fault_network_errors_total`
 - evaluate diagnostics log now appends a focused `failure_drill` summary block for direct CI troubleshooting
+
+### Nightly integration (G3.4)
+
+`nightly-benchmark.yml` now runs:
+
+- Linux x86_64 + arm64 package build (`tar.gz`)
+- Linux x86_64 + arm64 `public-api-gate --mode evaluate --profile observe`
+- calibration summary aggregation (`calibration-report.*`)
+- CI/release streak reporting (`streak-report.*`)
 
 ## 中文
 
@@ -174,6 +233,56 @@ arm64 只需改为：
 - `request_floor_checks`
 - 明确的 `failure_reasons`
 
+### G3.4 校准报告链路
+
+nightly 现已接入按架构 observe 样本采集与校准汇总。
+
+校准脚本：
+
+```bash
+bash ./scripts/public-api-calibration-report.sh \
+  --profile standard \
+  --output-dir ./target/public-api-calibration/manual \
+  --inputs ./result-x86.json ./result-arm.json
+```
+
+输出：
+
+- `calibration-report.json`
+- `calibration-report.md`
+
+报告固定包含：
+
+- `availability/gateway_5xx_ratio/p95/p99` 的按架构分布摘要（`min/median/p90/p95/max`）
+- 与当前 `standard` 阈值的差值
+- 样本量与最近趋势记录
+- 人工评审建议项（不自动回写阈值）
+
+### G3.4 连续全绿统计链路
+
+连续全绿统计脚本（仅报告，不阻断）：
+
+```bash
+bash ./scripts/public-api-gate-streak-report.sh \
+  --repo <owner/name> \
+  --workflow ci \
+  --window 40 \
+  --output-dir ./target/public-api-streak/ci
+```
+
+release 口径只需改为：
+
+```bash
+--workflow release
+```
+
+输出：
+
+- `streak-report.json`
+- `streak-report.md`
+
+收口指标用于跟踪“连续 10 次双架构全绿”是否达成。
+
 ### 停止边界与防挂死诊断
 
 - 门禁运行时已强制后台进程有界停止：
@@ -213,3 +322,12 @@ arm64 只需改为：
   - `gateway_fault_breakdown`
   - `gateway_fault_network_errors_total`
 - evaluate 诊断日志追加 `failure_drill` 摘要块，便于在 CI 直接定位失败原因
+
+### G3.4 nightly 接线
+
+`nightly-benchmark.yml` 现已执行：
+
+- Linux x86_64 + arm64 打包（`tar.gz`）
+- Linux x86_64 + arm64 `public-api-gate --mode evaluate --profile observe`
+- 校准汇总报告（`calibration-report.*`）
+- CI/release 连续全绿统计报告（`streak-report.*`）

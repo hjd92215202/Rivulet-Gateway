@@ -66,9 +66,16 @@ Newly closed in G3.3:
 - `rpm` release path is gated by install/uninstall lifecycle validation
 - CI now includes lightweight disposable lifecycle contract checks to catch script-interface drift before release
 
+Newly closed in G3.4 (tooling baseline):
+
+- nightly now collects dual-architecture observe samples (`linux-x86_64` + `linux-arm64`) for threshold calibration evidence
+- nightly summary now generates calibration report artifacts (`calibration-report.json` / `calibration-report.md`)
+- nightly summary now generates CI/release streak artifacts (`streak-report.json` / `streak-report.md`) for milestone-2 closure tracking
+
 Remaining in Milestone 2:
 
 - threshold tuning iteration on stable Linux runners
+- reach closure target: 10 consecutive dual-architecture green runs under current `standard` blocking profile
 
 ### Milestone 3: Public Internet scale hardening
 
@@ -152,9 +159,16 @@ G3.3 新增收口：
 - `rpm` 路径已接入 `安装 -> 卸载` 生命周期验证
 - CI 已新增一次性环境全生命周期脚本的轻量契约检查，用于提前发现脚本接口漂移
 
+G3.4 新增收口（工具链基线）：
+
+- nightly 已新增双架构 observe 样本采集（`linux-x86_64` + `linux-arm64`），用于阈值校准证据沉淀
+- nightly 汇总已新增校准报告产物（`calibration-report.json` / `calibration-report.md`）
+- nightly 汇总已新增 CI/release 连续全绿统计产物（`streak-report.json` / `streak-report.md`）
+
 里程碑 2 剩余项：
 
 - 在稳定 Linux runner 上持续校准阈值
+- 在当前 `standard` 阻断口径下达成“连续 10 次双架构全绿”收口目标
 
 ### 里程碑 3：公网规模化加固
 

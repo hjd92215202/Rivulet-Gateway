@@ -17,6 +17,7 @@ The main progress of this batch:
 - G3.1 capacity gate moved from "connected" to "stable blocking contract"
 - CI and release use the same `standard` profile and both block on failures
 - threshold model is now profile + architecture aware (`linux-x86_64`, `linux-arm64`)
+- G3.4 calibration tooling is now wired through nightly observe sampling and report artifacts
 
 ### Current blocking gates
 
@@ -82,6 +83,16 @@ The main progress of this batch:
   - `gateway_fault_network_errors_total`
 - this batch does not relax `standard` profile thresholds and does not change blocking semantics in CI/release
 
+### G3.4 calibration closure in progress (observe + report, no threshold auto-rewrite)
+
+- nightly now collects Linux x86_64 and Linux arm64 observe samples using `public-api-gate --mode evaluate --profile observe`
+- nightly summary now produces:
+  - `calibration-report.json` + `calibration-report.md`
+  - `streak-report.json` + `streak-report.md` for both `ci` and `release`
+- calibration report includes per-architecture distribution statistics and deltas against current `standard` thresholds
+- streak report tracks consecutive dual-architecture success against closure target (`10`)
+- CI/release `standard` dual blocking remains unchanged; this phase is report-first and does not auto-edit threshold files
+
 ### CI hang troubleshooting checklist
 
 1. check fixture backend shutdown signal path and confirm SIGTERM exits within bounded time
@@ -99,9 +110,8 @@ The main progress of this batch:
 ### Remaining production-hardening gaps
 
 1. continue per-architecture threshold tuning on stable Linux runners
-2. expand disposable install/upgrade/rollback/uninstall coverage
-3. strengthen detached signature policy for each release asset
-4. advance operational maturity for multi-team incident workflows
+2. reach and hold the milestone-2 closure target of 10 consecutive dual-architecture green runs
+3. advance operational maturity for multi-team incident workflows
 
 ## 中文
 
@@ -120,6 +130,7 @@ The main progress of this batch:
 - G3.1 容量门禁从“已接通”推进到“稳定阻断契约”
 - CI 与 release 统一使用 `standard` 阻断档，口径一致
 - 阈值模型升级为 profile + 架构维度（`linux-x86_64`、`linux-arm64`）
+- G3.4 校准工具链已接入 nightly observe 采样与报告产物
 
 ### 当前阻断门禁
 
@@ -185,6 +196,16 @@ The main progress of this batch:
   - `gateway_fault_network_errors_total`
 - 本批不放宽 `standard` 阈值，不改变 CI/release 阻断语义
 
+### G3.4 校准收口进行中（观测+报告，不自动改阈值）
+
+- nightly 现已采集 Linux x86_64 与 Linux arm64 的 observe 样本（`public-api-gate --mode evaluate --profile observe`）
+- nightly 汇总新增产物：
+  - `calibration-report.json` + `calibration-report.md`
+  - `streak-report.json` + `streak-report.md`（分别覆盖 `ci` 与 `release`）
+- 校准报告固定包含按架构分布统计与当前 `standard` 阈值差值
+- 连续全绿统计报告固定跟踪“连续双架构成功次数”与收口目标（`10`）
+- CI/release 的 `standard` 双阻断口径保持不变；本阶段坚持“先报告后调阈值”
+
 ### CI 卡死排障检查清单
 
 1. 先确认 fixture backend 的 SIGTERM 退出链路是否在阈值内完成
@@ -202,6 +223,5 @@ The main progress of this batch:
 ### 仍需继续推进的生产加固项
 
 1. 在稳定 Linux runner 上继续做按架构阈值校准
-2. 扩展一次性环境安装/升级/回滚/卸载验证覆盖
-3. 加强逐产物 detached 签名策略
-4. 提升多团队协同下的运维与应急成熟度
+2. 达成并保持“连续 10 次双架构全绿”的里程碑收口目标
+3. 提升多团队协同下的运维与应急成熟度
