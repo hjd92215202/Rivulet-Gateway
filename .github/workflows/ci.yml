@@ -17,6 +17,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   GATEWAY_DISABLE_ACCESS_LOG: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   script-standards:
@@ -272,7 +273,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download Linux x86_64 artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: rivulet-linux-x86_64
           path: ci-systemd-assets/x86_64
@@ -334,7 +335,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download Linux arm64 artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: rivulet-linux-arm64
           path: ci-systemd-assets/arm64
@@ -396,7 +397,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download Linux x86_64 artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: rivulet-linux-x86_64
           path: ci-public-api-assets/x86_64
@@ -442,7 +443,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download Linux arm64 artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: rivulet-linux-arm64
           path: ci-public-api-assets/arm64
@@ -493,7 +494,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download packaged artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           path: ci-assets
 
@@ -513,6 +514,21 @@ jobs:
 
       - name: Verify checksums
         run: bash ./packaging/tests/verify-checksums.sh ./CI-SHA256SUMS.txt ./ci-assets
+
+      - name: Check release signature contract
+        run: |
+          mkdir -p ci-signature-contract
+          cp CI-SHA256SUMS.txt ci-signature-contract/payload.txt
+          cp CI-SHA256SUMS.txt ci-signature-contract/SHA256SUMS.txt
+          touch ci-signature-contract/payload.txt.sig
+          touch ci-signature-contract/payload.txt.pem
+          touch ci-signature-contract/SHA256SUMS.txt.sig
+          touch ci-signature-contract/SHA256SUMS.txt.pem
+          touch ci-signature-contract/SHA256SUMS.sig
+          touch ci-signature-contract/SHA256SUMS.pem
+          bash ./scripts/verify-release-signatures.sh \
+            --assets-dir ci-signature-contract \
+            --mode contract-check
 
       - name: Attest build provenance
         if: ${{ github.event_name != 'pull_request' }}
