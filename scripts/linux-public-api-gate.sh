@@ -819,14 +819,41 @@ with open(reset_path, "r", encoding="utf-8") as fp:
 with open(backend_down_path, "r", encoding="utf-8") as fp:
     backend_down = json.load(fp)
 
+business_total_requests = int(business.get("total_requests", 0))
+business_gateway_5xx = int(business.get("gateway_5xx", 0))
+business_gateway_5xx_ratio = (
+    round((business_gateway_5xx / business_total_requests) * 100.0, 6)
+    if business_total_requests > 0
+    else 0.0
+)
+
+gateway_fault_breakdown = {
+    "timeout_gateway_5xx": int(timeout_case.get("gateway_5xx", 0)),
+    "reset_gateway_5xx": int(reset_case.get("gateway_5xx", 0)),
+    "backend_down_gateway_5xx": int(backend_down.get("gateway_5xx", 0)),
+    "timeout_network_errors": int(timeout_case.get("network_errors", 0)),
+    "reset_network_errors": int(reset_case.get("network_errors", 0)),
+    "backend_down_network_errors": int(backend_down.get("network_errors", 0)),
+}
 gateway_fault_5xx_total = timeout_case["gateway_5xx"] + reset_case["gateway_5xx"] + backend_down["gateway_5xx"]
+gateway_fault_network_errors_total = (
+    gateway_fault_breakdown["timeout_network_errors"]
+    + gateway_fault_breakdown["reset_network_errors"]
+    + gateway_fault_breakdown["backend_down_network_errors"]
+)
 summary = {
     "scenario": "failure-drill",
     "business_upstream_5xx": business["upstream_5xx"],
-    "business_gateway_5xx": business["gateway_5xx"],
+    "business_gateway_5xx": business_gateway_5xx,
+    "business_total_requests": business_total_requests,
+    "business_gateway_5xx_ratio": business_gateway_5xx_ratio,
+    "business_network_errors": int(business.get("network_errors", 0)),
+    "business_top_errors": business.get("top_errors", []),
     "gateway_fault_5xx_total": gateway_fault_5xx_total,
+    "gateway_fault_network_errors_total": gateway_fault_network_errors_total,
+    "gateway_fault_breakdown": gateway_fault_breakdown,
     "recovery_status": recovery_status,
-    "business_errors_are_upstream_only": business["upstream_5xx"] > 0 and business["gateway_5xx"] == 0,
+    "business_errors_are_upstream_only": business["upstream_5xx"] > 0 and business_gateway_5xx == 0,
     "gateway_faults_observed": gateway_fault_5xx_total > 0,
     "recovery_pass": recovery_status == "200",
 }
@@ -1114,6 +1141,33 @@ with open(summary_path, "w", encoding="utf-8") as fp:
     fp.write(f"- p95: `{round(observed_p95, 3)} ms`\n")
     fp.write(f"- p99: `{round(observed_p99, 3)} ms`\n")
     fp.write(f"- failure_drill_pass: `{bool(failure.get('pass', False))}`\n")
+    fp.write("\n## Failure Drill Diagnostics\n\n")
+    fp.write(
+        f"- business_upstream_5xx: `{failure.get('business_upstream_5xx', 0)}`\n"
+    )
+    fp.write(
+        f"- business_gateway_5xx: `{failure.get('business_gateway_5xx', 0)}`\n"
+    )
+    fp.write(
+        f"- business_total_requests: `{failure.get('business_total_requests', 0)}`\n"
+    )
+    fp.write(
+        f"- business_gateway_5xx_ratio: `{failure.get('business_gateway_5xx_ratio', 0.0)}`\n"
+    )
+    fp.write(
+        f"- gateway_fault_5xx_total: `{failure.get('gateway_fault_5xx_total', 0)}`\n"
+    )
+    fp.write(
+        f"- gateway_fault_network_errors_total: `{failure.get('gateway_fault_network_errors_total', 0)}`\n"
+    )
+    fp.write(f"- recovery_status: `{failure.get('recovery_status', '')}`\n")
+    fp.write(
+        f"- business_errors_are_upstream_only: `{failure.get('business_errors_are_upstream_only', False)}`\n"
+    )
+    fp.write(
+        f"- gateway_faults_observed: `{failure.get('gateway_faults_observed', False)}`\n"
+    )
+    fp.write(f"- recovery_pass: `{failure.get('recovery_pass', False)}`\n")
     fp.write(f"- baseline request floor: `{request_floor_checks['baseline']['observed']}/{request_floor_checks['baseline']['minimum']}`\n")
     fp.write(f"- soak request floor: `{request_floor_checks['soak']['observed']}/{request_floor_checks['soak']['minimum']}`\n")
     fp.write(f"- would_pass: `{would_pass}`\n")
@@ -1164,11 +1218,22 @@ result_path = sys.argv[1]
 with open(result_path, "r", encoding="utf-8") as fp:
     result = json.load(fp)
 
+failure_drill = result.get("scenarios", {}).get("failure_drill", {})
 print("# evaluate diagnostics")
 print(json.dumps({
     "failure_reasons": result.get("failure_reasons", []),
     "threshold_checks": result.get("threshold_checks", {}),
     "observed": result.get("observed", {}),
+    "failure_drill": {
+        "business_upstream_5xx": failure_drill.get("business_upstream_5xx"),
+        "business_gateway_5xx": failure_drill.get("business_gateway_5xx"),
+        "business_total_requests": failure_drill.get("business_total_requests"),
+        "business_gateway_5xx_ratio": failure_drill.get("business_gateway_5xx_ratio"),
+        "gateway_fault_5xx_total": failure_drill.get("gateway_fault_5xx_total"),
+        "gateway_fault_network_errors_total": failure_drill.get("gateway_fault_network_errors_total"),
+        "recovery_status": failure_drill.get("recovery_status"),
+        "pass": failure_drill.get("pass"),
+    },
 }, ensure_ascii=False))
 PY
 }
