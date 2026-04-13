@@ -47,6 +47,43 @@ Prerequisites:
 - If the host uses `apt-get`, `dnf`, or `yum`, the script can install `curl`, `tar`, `sha256sum`, `python3`, and `wrk` automatically.
 - If `--tag` is omitted, the script prefers the current checked-out Git tag and falls back to `v0.1.6`.
 
+### Disposable Lifecycle Gate (G3.3)
+
+Release now includes a dedicated disposable lifecycle gate script:
+
+- script: `scripts/linux-disposable-lifecycle-gate.sh`
+- output: `result.json` (machine-readable) + `summary.md` (human-readable)
+- architecture support: Linux x86_64 + Linux arm64
+- release blocking behavior:
+  - `tar.gz` path runs `install -> upgrade -> rollback -> uninstall` (`--lifecycle-mode full`)
+  - `rpm` path runs `install -> uninstall` (`--lifecycle-mode install-uninstall`)
+- any stage failure blocks release publish
+
+Example (tar.gz full lifecycle):
+
+```bash
+bash ./scripts/linux-disposable-lifecycle-gate.sh \
+  --mode execute \
+  --lifecycle-mode full \
+  --arch linux-x86_64 \
+  --format tar.gz \
+  --from-tag v0.1.5 \
+  --to-artifact ./dist/x86_64-unknown-linux-gnu/rivulet-gateway-0.1.6-linux-x86_64.tar.gz \
+  --host localhost
+```
+
+Example (rpm install/uninstall):
+
+```bash
+bash ./scripts/linux-disposable-lifecycle-gate.sh \
+  --mode execute \
+  --lifecycle-mode install-uninstall \
+  --arch linux-x86_64 \
+  --format rpm \
+  --to-artifact ./dist/rpmbuild/x86_64-unknown-linux-gnu/RPMS/x86_64/rivulet-gateway-0.1.6-1.x86_64.rpm \
+  --host localhost
+```
+
 ## 中文
 
 本文说明如何通过“一条命令”完成 Linux 发布包验证，并使用仓库自带的 fixture backend。
@@ -93,3 +130,40 @@ bash ./scripts/linux-release-e2e.sh \
 - 建议用 root 或具备 `sudo` 的用户执行，这样脚本才能自动补齐缺失依赖。
 - 如果系统使用 `apt-get`、`dnf` 或 `yum`，脚本会自动安装 `curl`、`tar`、`sha256sum`、`python3` 和 `wrk`。
 - 如果省略 `--tag`，脚本会优先使用当前 checkout 对应的 Git tag；如果拿不到，再回落到 `v0.1.6`。
+
+### 一次性环境全生命周期门禁（G3.3）
+
+release 现已接入专门的一次性环境全生命周期门禁脚本：
+
+- 脚本：`scripts/linux-disposable-lifecycle-gate.sh`
+- 输出：`result.json`（机器可读）+ `summary.md`（人工可读）
+- 架构支持：Linux x86_64 + Linux arm64
+- release 阻断方式：
+  - `tar.gz` 路径执行 `安装 -> 升级 -> 回滚 -> 卸载`（`--lifecycle-mode full`）
+  - `rpm` 路径执行 `安装 -> 卸载`（`--lifecycle-mode install-uninstall`）
+- 任一阶段失败都会阻断发布
+
+示例（tar.gz 全生命周期）：
+
+```bash
+bash ./scripts/linux-disposable-lifecycle-gate.sh \
+  --mode execute \
+  --lifecycle-mode full \
+  --arch linux-x86_64 \
+  --format tar.gz \
+  --from-tag v0.1.5 \
+  --to-artifact ./dist/x86_64-unknown-linux-gnu/rivulet-gateway-0.1.6-linux-x86_64.tar.gz \
+  --host localhost
+```
+
+示例（rpm 安装/卸载）：
+
+```bash
+bash ./scripts/linux-disposable-lifecycle-gate.sh \
+  --mode execute \
+  --lifecycle-mode install-uninstall \
+  --arch linux-x86_64 \
+  --format rpm \
+  --to-artifact ./dist/rpmbuild/x86_64-unknown-linux-gnu/RPMS/x86_64/rivulet-gateway-0.1.6-1.x86_64.rpm \
+  --host localhost
+```

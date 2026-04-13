@@ -18,6 +18,9 @@ This document defines the formal release process for `Rivulet Gateway / 溪流�
 - Pushing a tag such as `v0.1.5` runs `.github/workflows/release.yml`.
 - The release workflow builds Linux x86_64, Linux arm64, and Windows x86_64 artifacts.
 - CI and release workflows both run Linux x86_64 and Linux arm64 systemd lifecycle gates on packaged artifacts.
+- Release workflow now also runs disposable lifecycle gates on Linux x86_64 and Linux arm64:
+  - `tar.gz`: `install -> upgrade -> rollback -> uninstall`
+  - `rpm`: `install -> uninstall`
 - The publish job creates or updates the GitHub Release and uploads packaged assets, `SHA256SUMS.txt`, detached per-asset signatures/certificates, compatibility checksum signature files, and SBOM.
 - CI and release workflows also generate supply-chain provenance attestations for built artifacts.
 
@@ -29,7 +32,7 @@ This document defines the formal release process for `Rivulet Gateway / 溪流�
 4. Commit any final release-prep changes with a clear `feat:` or `docs:` message.
 5. Create an annotated tag such as `git tag -a v0.1.5 -m "Rivulet Gateway v0.1.5"`.
 6. Push the branch and the tag to GitHub.
-7. Monitor `.github/workflows/release.yml` until all packaging jobs, systemd lifecycle gates, and the publish job succeed.
+7. Monitor `.github/workflows/release.yml` until all packaging jobs, systemd lifecycle gates, disposable lifecycle gates, and the publish job succeed.
 8. Check that every published release asset has detached signature and certificate pairs (`<asset>.sig` and `<asset>.pem`), and confirm compatibility files `SHA256SUMS.sig` and `SHA256SUMS.pem` are present.
 9. Check that the GitHub Release page contains `zip`, `tar.gz`, `rpm`, `SHA256SUMS.txt`, detached signature/certificate files, and `SBOM.spdx.json`, and that every asset filename matches the tag version.
 10. Record remaining risks and post-release follow-up items in the roadmap.
@@ -48,6 +51,7 @@ Recommended Linux host checks before stronger production claims:
 - `bash ./scripts/linux-postinstall-validate.sh --tag <version> --host <host:port>`
 - `bash ./scripts/linux-systemd-validate.sh --tag <version> --host <host:port>`
 - `bash ./scripts/linux-upgrade-rollback-validate.sh --from-tag <previous> --to-tag <version> --host <host:port>`
+- `bash ./scripts/linux-disposable-lifecycle-gate.sh --mode execute --lifecycle-mode full --from-tag <previous> --to-tag <version> --arch <linux-x86_64|linux-arm64> --host <host>`
 
 Recommended release-local commands on the current Windows development host:
 
@@ -72,10 +76,10 @@ Expected release outputs:
 
 ### Current Release Boundaries
 
-The release process now includes keyless detached per-asset signing, checksum compatibility signatures, SBOM export, and provenance attestation, but still has important limits:
+The release process now includes keyless detached per-asset signing, checksum compatibility signatures, SBOM export, provenance attestation, and disposable lifecycle blocking gates. Remaining limits are:
 
-- No disposable-VM upgrade validation yet.
-- Systemd lifecycle is now gated in CI/release, but disposable VM coverage is still pending.
+- lifecycle gates still run on shared GitHub-hosted runners, and threshold/throughput tuning still needs ongoing calibration.
+- broader public Internet readiness still excludes HTTP/2, mTLS, and WebSocket.
 
 ## 中文
 
@@ -95,6 +99,9 @@ The release process now includes keyless detached per-asset signing, checksum co
 - 推送 `v0.1.5` 这类 tag 会触发 `.github/workflows/release.yml`。
 - release workflow 会构建 Linux x86_64、Linux arm64、Windows x86_64 三类产物。
 - CI 与 release workflow 都会在打包产物上执行 Linux x86_64 与 Linux arm64 的 systemd 生命周期门禁验证。
+- release workflow 现已新增 Linux x86_64 与 Linux arm64 的一次性环境全生命周期门禁：
+  - `tar.gz`：`安装 -> 升级 -> 回滚 -> 卸载`
+  - `rpm`：`安装 -> 卸载`
 - publish job 会创建或更新 GitHub Release，并上传打包产物、`SHA256SUMS.txt`、逐产物 detached 签名/证书、兼容清单签名文件和 SBOM。
 - CI 与 release workflow 还会为构建产物生成 supply-chain provenance 证明。
 
@@ -106,7 +113,7 @@ The release process now includes keyless detached per-asset signing, checksum co
 4. 用明确的 `feat:` 或 `docs:` 提交最后的发布准备改动。
 5. 创建注解 tag，例如 `git tag -a v0.1.5 -m "Rivulet Gateway v0.1.5"`。
 6. 将分支和 tag 一起推送到 GitHub。
-7. 观察 `.github/workflows/release.yml`，直到所有打包 job、systemd 生命周期门禁 job 和 publish job 成功。
+7. 观察 `.github/workflows/release.yml`，直到所有打包 job、systemd 生命周期门禁 job、一次性环境全生命周期门禁 job 和 publish job 成功。
 8. 检查每个发布资产是否都包含 detached 签名与证书对（`<asset>.sig` 与 `<asset>.pem`），并确认兼容文件 `SHA256SUMS.sig` 与 `SHA256SUMS.pem` 存在。
 9. 检查 GitHub Release 页面是否包含 `zip`、`tar.gz`、`rpm`、`SHA256SUMS.txt`、逐产物签名文件、`SBOM.spdx.json`，并确认所有产物文件名与 tag 版本一致。
 10. 把剩余风险和后续事项回填到路线图。
@@ -119,6 +126,13 @@ The release process now includes keyless detached per-asset signing, checksum co
 - `cargo test --workspace`
 - Windows 打包构建
 - Windows 打包后二进制 smoke test
+
+对外声明更强生产可用前，建议补充 Linux 主机验证：
+
+- `bash ./scripts/linux-postinstall-validate.sh --tag <version> --host <host:port>`
+- `bash ./scripts/linux-systemd-validate.sh --tag <version> --host <host:port>`
+- `bash ./scripts/linux-upgrade-rollback-validate.sh --from-tag <previous> --to-tag <version> --host <host:port>`
+- `bash ./scripts/linux-disposable-lifecycle-gate.sh --mode execute --lifecycle-mode full --from-tag <previous> --to-tag <version> --arch <linux-x86_64|linux-arm64> --host <host>`
 
 当前 Windows 开发机推荐命令：
 
@@ -145,5 +159,5 @@ cargo test --workspace
 
 当前发布流程已接入 keyless 逐产物 detached 签名、兼容清单签名、SBOM 和 provenance，但仍有明显边界：
 
-- 还没有基于 disposable VM 的升级验证。
-- systemd 生命周期已进入 CI/release 门禁，但 disposable VM 覆盖仍未完成。
+- 一次性环境全生命周期门禁已接入 release 阻断，但当前仍依赖 GitHub 共享 runner，阈值与吞吐口径需要持续校准。
+- 更大规模公网能力声明仍不包含 HTTP/2、mTLS、WebSocket。

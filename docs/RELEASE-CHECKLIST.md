@@ -26,6 +26,9 @@ Release target: `v<version>`
 - [ ] CI systemd lifecycle gate is green on Linux x86_64 and Linux arm64
 - [ ] Package jobs upload expected artifacts
 - [ ] Release systemd lifecycle gate is green on Linux x86_64 and Linux arm64
+- [ ] Release disposable lifecycle gate is green on Linux x86_64 and Linux arm64
+- [ ] Release disposable lifecycle tar.gz path passes full lifecycle (`install -> upgrade -> rollback -> uninstall`)
+- [ ] Release disposable lifecycle rpm path passes install/uninstall lifecycle
 - [ ] Release workflow creates `SHA256SUMS.txt`
 - [ ] Release workflow creates `SHA256SUMS.sig` and `SHA256SUMS.pem`
 - [ ] Release workflow creates detached signature pairs for every release asset (`<asset>.sig` + `<asset>.pem`)
@@ -58,6 +61,7 @@ Release target: `v<version>`
 - [ ] `bash ./scripts/linux-postinstall-validate.sh --tag <version> --host <host:port>`
 - [ ] `bash ./scripts/linux-systemd-validate.sh --tag <version> --host <host:port>`
 - [ ] `bash ./scripts/linux-upgrade-rollback-validate.sh --from-tag <previous> --to-tag <version> --host <host:port>`
+- [ ] `bash ./scripts/linux-disposable-lifecycle-gate.sh --mode execute --lifecycle-mode full --from-tag <previous> --to-tag <version> --arch <linux-x86_64|linux-arm64> --host <host>`
 
 ## 中文
 
@@ -85,6 +89,9 @@ Release target: `v<version>`
 - [ ] CI 中 Linux x86_64 与 Linux arm64 的 systemd 生命周期门禁通过
 - [ ] package job 上传了预期产物
 - [ ] release workflow 中 Linux x86_64 与 Linux arm64 的 systemd 生命周期门禁通过
+- [ ] release workflow 中 Linux x86_64 与 Linux arm64 的一次性环境全生命周期门禁通过
+- [ ] 一次性环境全生命周期门禁的 tar.gz 路径通过全流程（`安装 -> 升级 -> 回滚 -> 卸载`）
+- [ ] 一次性环境全生命周期门禁的 rpm 路径通过安装/卸载流程
 - [ ] release workflow 生成了 `SHA256SUMS.txt`
 - [ ] release workflow 生成了 `SHA256SUMS.sig` 和 `SHA256SUMS.pem`
 - [ ] release workflow 为每个发布资产生成 detached 签名对（`<asset>.sig` + `<asset>.pem`）
@@ -117,3 +124,4 @@ Release target: `v<version>`
 - [ ] `bash ./scripts/linux-postinstall-validate.sh --tag <version> --host <host:port>`
 - [ ] `bash ./scripts/linux-systemd-validate.sh --tag <version> --host <host:port>`
 - [ ] `bash ./scripts/linux-upgrade-rollback-validate.sh --from-tag <previous> --to-tag <version> --host <host:port>`
+- [ ] `bash ./scripts/linux-disposable-lifecycle-gate.sh --mode execute --lifecycle-mode full --from-tag <previous> --to-tag <version> --arch <linux-x86_64|linux-arm64> --host <host>`

@@ -14,7 +14,7 @@ Repository workflows:
 - `release`: tag `v*` push, `workflow_dispatch`
 - `nightly-benchmark`: schedule + manual dispatch
 
-### G3.1 blocking relation
+### G3.3 blocking relation
 
 ```mermaid
 flowchart TD
@@ -23,20 +23,34 @@ flowchart TD
     C["Schedule"] --> NB["nightly-benchmark workflow"]
 
     CI --> CI_STD["script-standards + schema-check"]
-    CI_STD --> CI_PX["package linux x86_64"]
-    CI_STD --> CI_PA["package linux arm64"]
+    CI_STD --> CI_LX["disposable lifecycle contract x86_64"]
+    CI_STD --> CI_LA["disposable lifecycle contract arm64"]
+    CI_LX --> CI_PX["package linux x86_64"]
+    CI_LA --> CI_PA["package linux arm64"]
+    CI_PX --> CI_SX["systemd lifecycle x86_64"]
+    CI_PA --> CI_SA["systemd lifecycle arm64"]
     CI_PX --> CI_GX["public-api-gate x86_64 evaluate standard arch-aware"]
     CI_PA --> CI_GA["public-api-gate arm64 evaluate standard arch-aware"]
     CI_GX --> CI_SC["supply-chain"]
     CI_GA --> CI_SC
+    CI_SX --> CI_SC
+    CI_SA --> CI_SC
 
     REL --> REL_STD["script-standards + schema-check"]
     REL_STD --> REL_PX["package linux x86_64 release"]
     REL_STD --> REL_PA["package linux arm64 release"]
+    REL_PX --> REL_SX["systemd lifecycle x86_64 release"]
+    REL_PA --> REL_SA["systemd lifecycle arm64 release"]
     REL_PX --> REL_GX["public-api-gate x86_64 release evaluate standard arch-aware"]
     REL_PA --> REL_GA["public-api-gate arm64 release evaluate standard arch-aware"]
+    REL_PX --> REL_DX["disposable lifecycle x86_64 release"]
+    REL_PA --> REL_DA["disposable lifecycle arm64 release"]
     REL_GX --> REL_PUB["publish github release"]
     REL_GA --> REL_PUB
+    REL_SX --> REL_PUB
+    REL_SA --> REL_PUB
+    REL_DX --> REL_PUB
+    REL_DA --> REL_PUB
 
     NB --> NB_RUN["benchmark collection"]
 ```
@@ -46,6 +60,8 @@ flowchart TD
 - CI and release both use `--profile standard`.
 - Both Linux architectures are mandatory.
 - Any public-api gate failure blocks downstream publish chain (`supply-chain` in CI, `publish` in release).
+- Release disposable lifecycle gates (`tar.gz` full + `rpm` install-uninstall) are hard blockers before `publish`.
+- CI disposable lifecycle contract checks are lightweight pre-gates to catch script-interface drift before release.
 - Gate jobs now run with explicit timeout and long-run evaluate windows.
 - `script-standards` now includes fixture backend SIGTERM termination regression check.
 - `script-standards` now also enforces `print_stage` -> `stderr` log channel contract.
@@ -59,6 +75,13 @@ Public API gate jobs upload:
 - `summary.md`
 
 These artifacts include architecture, duration profile, request-floor checks, and explicit failure reasons.
+
+Release disposable lifecycle jobs upload:
+
+- `result.json`
+- `summary.md`
+
+These artifacts include stage-level status for install/upgrade/rollback/uninstall and cleanup diagnostics.
 
 ### CI hang containment boundaries
 
@@ -86,13 +109,15 @@ These artifacts include architecture, duration profile, request-floor checks, an
 - `release`：`v*` tag 推送、`workflow_dispatch`
 - `nightly-benchmark`：定时 + 手动触发
 
-### G3.1 阻断关系
+### G3.3 阻断关系
 
 - CI 与 release 均采用 `--profile standard`。
 - `x86_64` 与 `arm64` 两条公网 API 门禁必须同时通过。
 - 任一门禁失败即阻断后续链路：
   - CI 阻断 `supply-chain`
   - release 阻断 `publish`
+- release 已新增一次性环境全生命周期门禁（`tar.gz` 全流程 + `rpm` 安装/卸载），任一失败都会阻断 `publish`。
+- CI 已新增一次性环境全生命周期脚本的轻量契约检查，用于提前发现脚本接口漂移。
 - 门禁 job 已接入明确超时与长跑 evaluate 窗口。
 - `script-standards` 已加入 fixture backend 的 SIGTERM 退出回归校验。
 - `script-standards` 新增 `print_stage` 必须写 `stderr` 的通道约束。
@@ -106,6 +131,13 @@ These artifacts include architecture, duration profile, request-floor checks, an
 - `summary.md`
 
 产物中包含架构、时长档位、最小样本门槛检查与明确失败原因，便于回溯审计。
+
+一次性环境全生命周期门禁 job 固定上传：
+
+- `result.json`
+- `summary.md`
+
+产物中包含安装/升级/回滚/卸载分阶段状态与清理诊断字段，便于发布审计和回归定位。
 
 ### CI 卡死治理边界
 

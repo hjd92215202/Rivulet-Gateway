@@ -59,10 +59,16 @@ Newly closed in G3.2:
 - release publish job now hard-blocks on detached signature verification before upload
 - CI/release supply-chain workflows now enforce signature-contract checks and use Node 24 compatible JavaScript action runtime setting
 
+Newly closed in G3.3:
+
+- release now blocks on disposable lifecycle validation across Linux x86_64 and Linux arm64
+- `tar.gz` release path is gated by full lifecycle orchestration (`install -> upgrade -> rollback -> uninstall`)
+- `rpm` release path is gated by install/uninstall lifecycle validation
+- CI now includes lightweight disposable lifecycle contract checks to catch script-interface drift before release
+
 Remaining in Milestone 2:
 
 - threshold tuning iteration on stable Linux runners
-- disposable full lifecycle coverage expansion
 
 ### Milestone 3: Public Internet scale hardening
 
@@ -139,10 +145,16 @@ G3.2 新增收口：
 - release publish 在上传前新增逐产物验签硬门禁，验签失败会直接阻断发布
 - CI/release supply-chain 流程新增签名契约检查，并启用 Node 24 兼容 JavaScript action 运行时设置
 
+G3.3 新增收口：
+
+- release 已在 Linux x86_64 与 Linux arm64 接入一次性环境全生命周期门禁阻断
+- `tar.gz` 路径已由全生命周期编排脚本执行 `安装 -> 升级 -> 回滚 -> 卸载`
+- `rpm` 路径已接入 `安装 -> 卸载` 生命周期验证
+- CI 已新增一次性环境全生命周期脚本的轻量契约检查，用于提前发现脚本接口漂移
+
 里程碑 2 剩余项：
 
 - 在稳定 Linux runner 上持续校准阈值
-- 一次性环境全生命周期验证规模扩展
 
 ### 里程碑 3：公网规模化加固
 
