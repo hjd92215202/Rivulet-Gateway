@@ -429,42 +429,44 @@ jobs:
         run: |
           (
             cd publish-assets
-            find . -maxdepth 1 -type f -printf '%P\0' | sort -z | xargs -0 sha256sum > ../SHA256SUMS.txt
+            find . -maxdepth 1 -type f -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
           )
 
       - name: Verify release checksums
-        run: bash ./packaging/tests/verify-checksums.sh ./SHA256SUMS.txt ./publish-assets
+        run: bash ./packaging/tests/verify-checksums.sh ./publish-assets/SHA256SUMS.txt ./publish-assets
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
         with:
           cosign-release: "v2.4.1"
 
-      - name: Sign SHA256 manifest
+      - name: Sign release assets (detached per asset)
         run: |
-          cosign sign-blob \
-            --yes \
-            --output-signature SHA256SUMS.sig \
-            --output-certificate SHA256SUMS.pem \
-            SHA256SUMS.txt
+          while IFS= read -r file; do
+            cosign sign-blob \
+              --yes \
+              --output-signature "${file}.sig" \
+              --output-certificate "${file}.pem" \
+              "$file"
+          done < <(find publish-assets -maxdepth 1 -type f ! -name '*.sig' ! -name '*.pem' | sort)
+
+          cp publish-assets/SHA256SUMS.txt.sig publish-assets/SHA256SUMS.sig
+          cp publish-assets/SHA256SUMS.txt.pem publish-assets/SHA256SUMS.pem
 
       - name: Verify SHA256 manifest signature
         run: |
           cosign verify-blob \
-            --certificate SHA256SUMS.pem \
-            --signature SHA256SUMS.sig \
+            --certificate publish-assets/SHA256SUMS.pem \
+            --signature publish-assets/SHA256SUMS.sig \
             --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/release.yml@.*$" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            SHA256SUMS.txt
+            publish-assets/SHA256SUMS.txt
 
       - name: Attest release provenance
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
             publish-assets/*
-            SHA256SUMS.txt
-            SHA256SUMS.sig
-            SHA256SUMS.pem
 
       - name: Ensure GitHub release exists
         env:
@@ -486,7 +488,3 @@ jobs:
           while IFS= read -r file; do
             gh release upload "${GITHUB_REF_NAME}" --clobber "$file"
           done < <(find publish-assets -maxdepth 1 -type f | sort)
-
-          gh release upload "${GITHUB_REF_NAME}" --clobber SHA256SUMS.txt
-          gh release upload "${GITHUB_REF_NAME}" --clobber SHA256SUMS.sig
-          gh release upload "${GITHUB_REF_NAME}" --clobber SHA256SUMS.pem
