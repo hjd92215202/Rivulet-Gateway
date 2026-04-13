@@ -99,11 +99,82 @@ jobs:
       - name: Workspace tests
         run: cargo test --workspace
 
+  disposable-lifecycle-contract-linux-x86_64:
+    name: Disposable Lifecycle Contract Linux x86_64
+    runs-on: ubuntu-24.04
+    needs:
+      - script-standards
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate lifecycle gate contract (full)
+        run: |
+          bash ./scripts/linux-disposable-lifecycle-gate.sh \
+            --mode contract-check \
+            --lifecycle-mode full \
+            --arch linux-x86_64 \
+            --work-dir "$RUNNER_TEMP/rivulet-ci-lifecycle-contract-x86-full"
+
+      - name: Validate lifecycle gate contract (install-uninstall)
+        run: |
+          bash ./scripts/linux-disposable-lifecycle-gate.sh \
+            --mode contract-check \
+            --lifecycle-mode install-uninstall \
+            --arch linux-x86_64 \
+            --work-dir "$RUNNER_TEMP/rivulet-ci-lifecycle-contract-x86-install-uninstall"
+
+      - name: Upload lifecycle contract report (x86_64)
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-ci-disposable-lifecycle-contract-linux-x86_64
+          path: |
+            ${{ runner.temp }}/rivulet-ci-lifecycle-contract-x86-full
+            ${{ runner.temp }}/rivulet-ci-lifecycle-contract-x86-install-uninstall
+          if-no-files-found: ignore
+
+  disposable-lifecycle-contract-linux-arm64:
+    name: Disposable Lifecycle Contract Linux arm64
+    runs-on: ubuntu-24.04-arm
+    needs:
+      - script-standards
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate lifecycle gate contract (full)
+        run: |
+          bash ./scripts/linux-disposable-lifecycle-gate.sh \
+            --mode contract-check \
+            --lifecycle-mode full \
+            --arch linux-arm64 \
+            --work-dir "$RUNNER_TEMP/rivulet-ci-lifecycle-contract-arm-full"
+
+      - name: Validate lifecycle gate contract (install-uninstall)
+        run: |
+          bash ./scripts/linux-disposable-lifecycle-gate.sh \
+            --mode contract-check \
+            --lifecycle-mode install-uninstall \
+            --arch linux-arm64 \
+            --work-dir "$RUNNER_TEMP/rivulet-ci-lifecycle-contract-arm-install-uninstall"
+
+      - name: Upload lifecycle contract report (arm64)
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-ci-disposable-lifecycle-contract-linux-arm64
+          path: |
+            ${{ runner.temp }}/rivulet-ci-lifecycle-contract-arm-full
+            ${{ runner.temp }}/rivulet-ci-lifecycle-contract-arm-install-uninstall
+          if-no-files-found: ignore
+
   package-linux-x86_64:
     name: Package Linux x86_64
     runs-on: ubuntu-24.04
     needs:
       - test-linux
+      - disposable-lifecycle-contract-linux-x86_64
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -208,6 +279,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     needs:
       - test-linux-arm64
+      - disposable-lifecycle-contract-linux-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v5
