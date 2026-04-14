@@ -169,13 +169,35 @@ def summarize(values):
 
 def parse_thresholds(path):
     thresholds = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = [part.strip() for part in line.split("=", 1)]
         thresholds[key] = float(value)
     return thresholds
+
+
+def clamp(value, lower, upper):
+    return max(lower, min(upper, value))
+
+
+def bounded_step_recommendation(current, raw_target, down_ratio=0.10, up_ratio=0.10, floor_value=0.0):
+    max_step_down = current * down_ratio
+    max_step_up = current * up_ratio
+    lower_bound = max(floor_value, current - max_step_down)
+    upper_bound = current + max_step_up
+    recommended = clamp(raw_target, lower_bound, upper_bound)
+    return (
+        round(recommended, 6),
+        {
+            "max_step_down": round(max_step_down, 6),
+            "max_step_up": round(max_step_up, 6),
+            "lower_bound": round(lower_bound, 6),
+            "upper_bound": round(upper_bound, 6),
+            "raw_target": round(raw_target, 6),
+        },
+    )
 
 
 thresholds_raw = parse_thresholds(threshold_file)
@@ -193,7 +215,7 @@ for arch in arches:
 records = {arch: [] for arch in arches}
 for path in input_paths:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         raise SystemExit(f"invalid json input: {path} ({exc})")
 
@@ -221,6 +243,8 @@ for path in input_paths:
 
 analysis = {}
 review_items = []
+recommended_thresholds = {}
+change_budget = {}
 
 for arch in arches:
     arch_records = sorted(records[arch], key=lambda item: item["timestamp"], reverse=True)
@@ -234,8 +258,29 @@ for arch in arches:
     }
 
     arch_review = []
+    arch_recommended = dict(threshold)
+    arch_budget = {}
     if metric_summary["availability"]["count"] == 0:
         arch_review.append("no samples available for this architecture")
+        arch_budget["availability_min"] = {
+            "direction": "up-only",
+            "max_step_down": 0.0,
+            "max_step_up": 0.0,
+            "lower_bound": round(threshold["availability_min"], 6),
+            "upper_bound": round(threshold["availability_min"], 6),
+            "raw_target": round(threshold["availability_min"], 6),
+            "applied_delta": 0.0,
+        }
+        for key in ("gateway_5xx_ratio_max", "p95_ms_max", "p99_ms_max"):
+            arch_budget[key] = {
+                "direction": "two-way",
+                "max_step_down": 0.0,
+                "max_step_up": 0.0,
+                "lower_bound": round(threshold[key], 6),
+                "upper_bound": round(threshold[key], 6),
+                "raw_target": round(threshold[key], 6),
+                "applied_delta": 0.0,
+            }
     else:
         if metric_summary["availability"]["min"] < threshold["availability_min"]:
             arch_review.append("availability minimum fell below threshold in at least one sample")
@@ -256,15 +301,109 @@ for arch in arches:
         if delta["p99_ms_vs_max_median"] < threshold["p99_ms_max"] * 0.1:
             arch_review.append("p99 median headroom is narrow (<10% threshold)")
 
+        availability_values = [item["availability"] for item in arch_records]
+        availability_margin = max(0.05, (100.0 - threshold["availability_min"]) * 0.1)
+        consecutive_above = 0
+        for item in arch_records:
+            if item["availability"] >= threshold["availability_min"] + availability_margin:
+                consecutive_above += 1
+            else:
+                break
+
+        availability_budget_up = max(0.001, (100.0 - threshold["availability_min"]) * 0.1)
+        availability_raw_target = threshold["availability_min"]
+        if consecutive_above >= min(5, len(availability_values)):
+            p10_candidate = percentile(availability_values, 0.10) - 0.01
+            availability_raw_target = max(threshold["availability_min"], p10_candidate)
+        availability_recommended = min(100.0, threshold["availability_min"] + availability_budget_up)
+        availability_recommended = min(availability_recommended, availability_raw_target)
+        availability_recommended = round(max(threshold["availability_min"], availability_recommended), 6)
+        arch_recommended["availability_min"] = availability_recommended
+        arch_budget["availability_min"] = {
+            "direction": "up-only",
+            "max_step_down": 0.0,
+            "max_step_up": round(availability_budget_up, 6),
+            "lower_bound": round(threshold["availability_min"], 6),
+            "upper_bound": round(min(100.0, threshold["availability_min"] + availability_budget_up), 6),
+            "raw_target": round(availability_raw_target, 6),
+            "applied_delta": round(availability_recommended - threshold["availability_min"], 6),
+            "consecutive_above_margin": consecutive_above,
+            "significant_margin": round(availability_margin, 6),
+        }
+
+        ratio_values = [item["gateway_5xx_ratio"] for item in arch_records]
+        ratio_raw = percentile(ratio_values, 0.95) + max(0.01, percentile(ratio_values, 0.95) * 0.2)
+        ratio_recommended, ratio_budget = bounded_step_recommendation(
+            threshold["gateway_5xx_ratio_max"],
+            ratio_raw,
+            down_ratio=0.10,
+            up_ratio=0.10,
+            floor_value=0.0,
+        )
+        arch_recommended["gateway_5xx_ratio_max"] = ratio_recommended
+        arch_budget["gateway_5xx_ratio_max"] = {
+            "direction": "two-way",
+            **ratio_budget,
+            "applied_delta": round(ratio_recommended - threshold["gateway_5xx_ratio_max"], 6),
+        }
+
+        p95_values = [item["p95_ms"] for item in arch_records]
+        p95_raw = percentile(p95_values, 0.95) * 1.1 + 2.0
+        p95_recommended, p95_budget = bounded_step_recommendation(
+            threshold["p95_ms_max"],
+            p95_raw,
+            down_ratio=0.10,
+            up_ratio=0.10,
+            floor_value=1.0,
+        )
+        arch_recommended["p95_ms_max"] = p95_recommended
+        arch_budget["p95_ms_max"] = {
+            "direction": "two-way",
+            **p95_budget,
+            "applied_delta": round(p95_recommended - threshold["p95_ms_max"], 6),
+        }
+
+        p99_values = [item["p99_ms"] for item in arch_records]
+        p99_raw = percentile(p99_values, 0.95) * 1.1 + 5.0
+        p99_recommended, p99_budget = bounded_step_recommendation(
+            threshold["p99_ms_max"],
+            p99_raw,
+            down_ratio=0.10,
+            up_ratio=0.10,
+            floor_value=1.0,
+        )
+        arch_recommended["p99_ms_max"] = p99_recommended
+        arch_budget["p99_ms_max"] = {
+            "direction": "two-way",
+            **p99_budget,
+            "applied_delta": round(p99_recommended - threshold["p99_ms_max"], 6),
+        }
+
     if len(arch_records) < 10:
         arch_review.append("sample count is below 10; keep collecting nightly observe evidence")
+
+    changed_metrics = [
+        key for key in arch_recommended.keys()
+        if round(arch_recommended[key] - threshold[key], 6) != 0
+    ]
+    if changed_metrics:
+        arch_review.append(
+            "conservative recommendations differ from current thresholds: "
+            + ", ".join(sorted(changed_metrics))
+        )
 
     for item in arch_review:
         review_items.append(f"[{arch}] {item}")
 
+    recommended_thresholds[arch] = arch_recommended
+    change_budget[arch] = arch_budget
     analysis[arch] = {
         "sample_count": len(arch_records),
+        # 向后兼容：保留旧字段，避免已有消费方直接读取失败。
         "thresholds_standard": threshold,
+        "thresholds_current_profile": threshold,
+        "recommended_thresholds": arch_recommended,
+        "change_budget": arch_budget,
         "distribution": metric_summary,
         "delta_vs_standard": delta,
         "trend_latest": arch_records[:trend_size],
@@ -277,6 +416,8 @@ report = {
     "input_count": len(input_paths),
     "trend_size": trend_size,
     "analysis": analysis,
+    "recommended_thresholds": recommended_thresholds,
+    "change_budget": change_budget,
     "recommended_review_items": review_items,
 }
 
@@ -305,6 +446,24 @@ for arch in arches:
     lines.append(f"- gateway_5xx median headroom: `{block['delta_vs_standard']['gateway_5xx_ratio_vs_max_median']}`")
     lines.append(f"- p95 median headroom(ms): `{block['delta_vs_standard']['p95_ms_vs_max_median']}`")
     lines.append(f"- p99 median headroom(ms): `{block['delta_vs_standard']['p99_ms_vs_max_median']}`")
+    lines.append("")
+    lines.append("Recommended thresholds (conservative, budget-limited):")
+    lines.append("")
+    lines.append("| metric | current | recommended | delta | max_step_down | max_step_up |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+    for metric, current_key in [
+        ("availability_min", "availability_min"),
+        ("gateway_5xx_ratio_max", "gateway_5xx_ratio_max"),
+        ("p95_ms_max", "p95_ms_max"),
+        ("p99_ms_max", "p99_ms_max"),
+    ]:
+        budget = block["change_budget"][current_key]
+        recommended = block["recommended_thresholds"][current_key]
+        current = block["thresholds_current_profile"][current_key]
+        delta_value = round(recommended - current, 6)
+        lines.append(
+            f"| {metric} | {current} | {recommended} | {delta_value} | {budget['max_step_down']} | {budget['max_step_up']} |"
+        )
     lines.append("")
     lines.append("| metric | min | median | p90 | p95 | max |")
     lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")

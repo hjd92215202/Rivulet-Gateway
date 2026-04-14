@@ -170,15 +170,18 @@ def fetch_jobs(run_id: int):
 
 runs = fetch_runs(window)
 if not runs:
+    closure_target = 10
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "repo": repo,
         "workflow": workflow,
         "workflow_file": workflow_file,
         "window": window,
-        "closure_target": 10,
+        "closure_target": closure_target,
         "inspected_runs": 0,
         "consecutive_dual_arch_success": 0,
+        "closure_ready": False,
+        "remaining_to_target": closure_target,
         "target_reached": False,
         "message": "no historical workflow runs found",
         "runs": [],
@@ -189,6 +192,9 @@ if not runs:
         fp.write("# Public API Gate Streak Report\n\n")
         fp.write(f"- repo: `{repo}`\n")
         fp.write(f"- workflow: `{workflow}`\n")
+        fp.write(f"- closure_target: `{closure_target}`\n")
+        fp.write(f"- closure_ready: `False`\n")
+        fp.write(f"- remaining_to_target: `{closure_target}`\n")
         fp.write("- no historical workflow runs found\n")
     raise SystemExit(0)
 
@@ -241,6 +247,8 @@ report = {
     "closure_target": 10,
     "inspected_runs": len(inspected),
     "consecutive_dual_arch_success": streak,
+    "closure_ready": streak >= 10,
+    "remaining_to_target": max(0, 10 - streak),
     "target_reached": streak >= 10,
     "required_jobs": required_jobs,
     "runs": inspected,
@@ -257,6 +265,8 @@ with open(summary_path, "w", encoding="utf-8") as fp:
     fp.write(f"- window: `{window}`\n")
     fp.write(f"- consecutive_dual_arch_success: `{streak}`\n")
     fp.write("- closure_target: `10`\n")
+    fp.write(f"- closure_ready: `{streak >= 10}`\n")
+    fp.write(f"- remaining_to_target: `{max(0, 10 - streak)}`\n")
     fp.write(f"- target_reached: `{streak >= 10}`\n\n")
     fp.write("## Required Jobs\n\n")
     for name in required_jobs:
