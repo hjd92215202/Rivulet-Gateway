@@ -93,6 +93,36 @@ The main progress of this batch:
 - streak report tracks consecutive dual-architecture success against closure target (`10`)
 - CI/release `standard` dual blocking remains unchanged; this phase is report-first and does not auto-edit threshold files
 
+### G3.4.1 closure execution wiring (report-driven, still non-blocking)
+
+- calibration report now includes conservative `recommended_thresholds` and per-metric `change_budget`
+- nightly summary now generates:
+  - `threshold-pr-checklist.md` for manual threshold PR review
+  - `milestone2-closure-status.json/.md` for milestone closure synthesis
+- streak reports now expose:
+  - `closure_ready`
+  - `remaining_to_target`
+- closure status is computed from both workflows:
+  - `ci` and `release` must both reach 10 consecutive dual-architecture green runs
+- this batch keeps report-only behavior:
+  - no hard blocking on streak count
+  - no automatic threshold rewrite
+
+### G3.4.1 收口执行（先报告、非硬阻断）
+
+- 校准报告新增保守建议字段：`recommended_thresholds` 与 `change_budget`
+- nightly 汇总新增产物：
+  - `threshold-pr-checklist.md`（阈值 PR 人工评审清单）
+  - `milestone2-closure-status.json/.md`（里程碑收口状态汇总）
+- streak 报告新增收口字段：
+  - `closure_ready`
+  - `remaining_to_target`
+- Milestone 2 收口判定保持：
+  - `ci` 与 `release` 都达到连续 10 次双架构全绿
+- 本批仍坚持：
+  - 仅报告，不因 streak 计数增加新的硬阻断
+  - 不自动回写阈值文件
+
 ### CI hang troubleshooting checklist
 
 1. check fixture backend shutdown signal path and confirm SIGTERM exits within bounded time

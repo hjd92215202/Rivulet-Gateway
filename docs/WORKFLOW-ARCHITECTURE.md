@@ -69,6 +69,9 @@ flowchart TD
 - Release disposable lifecycle gates (`tar.gz` full + `rpm` install-uninstall) are hard blockers before `publish`.
 - CI disposable lifecycle contract checks are lightweight pre-gates to catch script-interface drift before release.
 - Nightly now collects observe samples on both Linux architectures and emits calibration/streak reports for threshold tuning.
+- Nightly summary now also emits:
+  - threshold PR checklist (`threshold-pr-checklist.md`)
+  - milestone-2 closure synthesis (`milestone2-closure-status.json/.md`)
 - Gate jobs now run with explicit timeout and long-run evaluate windows.
 - `script-standards` now includes fixture backend SIGTERM termination regression check.
 - `script-standards` now also enforces `print_stage` -> `stderr` log channel contract.
@@ -96,8 +99,17 @@ Nightly calibration summary uploads:
 - `calibration-report.md`
 - `streak-report.json`
 - `streak-report.md`
+- `threshold-pr-checklist.md`
+- `milestone2-closure-status.json`
+- `milestone2-closure-status.md`
 
-These artifacts support manual threshold tuning and milestone-2 closure tracking (10 consecutive dual-arch green runs).
+These artifacts support manual threshold tuning and milestone-2 closure tracking (10 consecutive dual-arch green runs in both CI and release).
+
+G3.4.1 说明（中文）:
+
+- nightly 汇总阶段新增 `threshold-pr-checklist.md` 与 `milestone2-closure-status.json/.md`
+- `milestone2-closure-status` 会同时读取 CI 与 release streak 结果，输出 `closure_ready` 与 `remaining_to_target`
+- 该链路用于收口可视化和人工决策，不新增 release 硬阻断
 
 ### CI hang containment boundaries
 

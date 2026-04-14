@@ -72,6 +72,20 @@ Newly closed in G3.4 (tooling baseline):
 - nightly summary now generates calibration report artifacts (`calibration-report.json` / `calibration-report.md`)
 - nightly summary now generates CI/release streak artifacts (`streak-report.json` / `streak-report.md`) for milestone-2 closure tracking
 
+Newly closed in G3.4.1 (closure execution tooling):
+
+- calibration report now includes conservative recommendation fields (`recommended_thresholds` + `change_budget`)
+- nightly summary now generates threshold PR review artifact (`threshold-pr-checklist.md`)
+- nightly summary now generates milestone-2 closure synthesis artifacts (`milestone2-closure-status.json` / `milestone2-closure-status.md`)
+- streak reports now expose `closure_ready` and `remaining_to_target` for explicit closure tracking
+
+G3.4.1 新增收口（执行工具链）:
+
+- 校准报告新增保守建议字段：`recommended_thresholds` 与 `change_budget`
+- nightly 汇总新增 `threshold-pr-checklist.md`（阈值 PR 人工评审清单）
+- nightly 汇总新增 `milestone2-closure-status.json/.md`（里程碑 2 收口状态汇总）
+- streak 报告新增 `closure_ready` 与 `remaining_to_target`（连续全绿收口追踪）
+
 Remaining in Milestone 2:
 
 - threshold tuning iteration on stable Linux runners

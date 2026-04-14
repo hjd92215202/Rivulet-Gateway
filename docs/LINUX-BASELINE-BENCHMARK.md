@@ -117,6 +117,38 @@ Outputs:
 
 The closure indicator tracks whether consecutive dual-architecture success reaches 10.
 
+### G3.4.1 threshold PR checklist and milestone closure status
+
+Threshold PR checklist script:
+
+```bash
+bash ./scripts/public-api-threshold-pr-checklist.sh \
+  --report ./target/public-api-calibration/manual/calibration-report.json \
+  --output-dir ./target/public-api-threshold-pr-checklist/manual
+```
+
+Milestone-2 closure synthesis script:
+
+```bash
+bash ./scripts/public-api-milestone2-closure-status.sh \
+  --ci-streak ./target/public-api-streak/ci/streak-report.json \
+  --release-streak ./target/public-api-streak/release/streak-report.json \
+  --calibration-report ./target/public-api-calibration/manual/calibration-report.json \
+  --output-dir ./target/public-api-milestone2-closure/manual
+```
+
+New report artifacts:
+
+- `threshold-pr-checklist.md`: recommendation evidence, risk notes, and rollback conditions for manual threshold PR review
+- `milestone2-closure-status.json` / `milestone2-closure-status.md`: `ci` + `release` closure synthesis, including `closure_ready` and `remaining_to_target`
+- report-first only: no automatic threshold rewrite
+
+G3.4.1 新增收口产物（中文）:
+
+- `threshold-pr-checklist.md`：用于阈值 PR 人工评审，包含建议值证据、风险说明、回滚条件
+- `milestone2-closure-status.json` / `milestone2-closure-status.md`：汇总 `ci` 与 `release` 的 `closure_ready` 和 `remaining_to_target`
+- 继续坚持“先报告后调阈值”，不自动回写阈值文件
+
 ### Shutdown boundary and anti-hang diagnostics
 
 - gate runtime now enforces bounded background process shutdown:
@@ -165,6 +197,8 @@ The closure indicator tracks whether consecutive dual-architecture success reach
 - Linux x86_64 + arm64 `public-api-gate --mode evaluate --profile observe`
 - calibration summary aggregation (`calibration-report.*`)
 - CI/release streak reporting (`streak-report.*`)
+- threshold PR checklist output (`threshold-pr-checklist.md`)
+- milestone-2 closure synthesis output (`milestone2-closure-status.json/.md`)
 
 ## 中文
 
