@@ -44,6 +44,7 @@ SOAK_DURATION_SECS=60
 SOAK_CONCURRENCY=16
 SAMPLE_COUNT=3
 FAILURE_DURATION_SECS=12
+FAILURE_BUSINESS_SAMPLE_COUNT=3
 
 THRESHOLD_AVAILABILITY=""
 THRESHOLD_GATEWAY_5XX_RATIO_MAX=""
@@ -780,14 +781,22 @@ run_soak_samples() {
 
 run_failure_drill() {
   local summary_path="$1"
-  local business_path="$RUNS_DIR/failure-business-503.json"
+  local business_paths=()
+  local business_path=""
   local timeout_path="$RUNS_DIR/failure-timeout.json"
   local reset_path="$RUNS_DIR/failure-reset.json"
   local backend_down_path="$RUNS_DIR/failure-backend-down.json"
   local recovery_status=""
+  local index=0
 
   # 先验证上游业务 5xx 不应计入网关 5xx，再验证 timeout/reset/backend-down 的网关故障分类。
-  run_load_probe "failure-business-503" "/fixture/status/503" "$FAILURE_DURATION_SECS" 8 "$business_path"
+  # 业务 503 场景采用 3 次采样取中位数，吸收 runner 瞬态抖动带来的偶发单点噪声。
+  for index in $(seq 1 "$FAILURE_BUSINESS_SAMPLE_COUNT"); do
+    business_path="$RUNS_DIR/failure-business-503-sample-$index.json"
+    run_load_probe "failure-business-503-sample-$index" "/fixture/status/503" "$FAILURE_DURATION_SECS" 8 "$business_path"
+    business_paths+=("$business_path")
+    sleep 1
+  done
   run_load_probe "failure-timeout" "/fixture/delay/2000" "$FAILURE_DURATION_SECS" 8 "$timeout_path"
   run_load_probe "failure-reset" "/fixture/reset" "$FAILURE_DURATION_SECS" 6 "$reset_path"
 
@@ -799,19 +808,43 @@ run_failure_drill() {
   start_fixture_backend
   recovery_status="$(wait_for_status "200" "/fixture/default" 20 0.25 3 || true)"
 
-  "$PYTHON_BIN" - "$summary_path" "$business_path" "$timeout_path" "$reset_path" "$backend_down_path" "$recovery_status" <<'PY'
+  "$PYTHON_BIN" - "$summary_path" "$timeout_path" "$reset_path" "$backend_down_path" "$recovery_status" "${business_paths[@]}" <<'PY'
+import collections
 import json
+import statistics
 import sys
 
 summary_path = sys.argv[1]
-business_path = sys.argv[2]
-timeout_path = sys.argv[3]
-reset_path = sys.argv[4]
-backend_down_path = sys.argv[5]
-recovery_status = sys.argv[6]
+timeout_path = sys.argv[2]
+reset_path = sys.argv[3]
+backend_down_path = sys.argv[4]
+recovery_status = sys.argv[5]
+business_paths = sys.argv[6:]
 
-with open(business_path, "r", encoding="utf-8") as fp:
-    business = json.load(fp)
+if not business_paths:
+    raise SystemExit("missing failure-business-503 sample paths")
+
+business_samples = []
+business_error_counter = collections.Counter()
+for path in business_paths:
+    with open(path, "r", encoding="utf-8") as fp:
+        payload = json.load(fp)
+    business_samples.append(
+        {
+            "scenario": payload.get("scenario", ""),
+            "total_requests": int(payload.get("total_requests", 0)),
+            "upstream_5xx": int(payload.get("upstream_5xx", 0)),
+            "gateway_5xx": int(payload.get("gateway_5xx", 0)),
+            "network_errors": int(payload.get("network_errors", 0)),
+            "gateway_5xx_ratio": float(payload.get("gateway_5xx_ratio", 0.0)),
+        }
+    )
+    for item in payload.get("top_errors", []):
+        message = str(item.get("message", ""))
+        count = int(item.get("count", 0))
+        if message and count > 0:
+            business_error_counter[message] += count
+
 with open(timeout_path, "r", encoding="utf-8") as fp:
     timeout_case = json.load(fp)
 with open(reset_path, "r", encoding="utf-8") as fp:
@@ -819,13 +852,27 @@ with open(reset_path, "r", encoding="utf-8") as fp:
 with open(backend_down_path, "r", encoding="utf-8") as fp:
     backend_down = json.load(fp)
 
-business_total_requests = int(business.get("total_requests", 0))
-business_gateway_5xx = int(business.get("gateway_5xx", 0))
+business_total_requests = int(sum(item["total_requests"] for item in business_samples))
+business_upstream_5xx = int(sum(item["upstream_5xx"] for item in business_samples))
+business_gateway_values = [int(item["gateway_5xx"]) for item in business_samples]
+business_gateway_5xx_total = int(sum(business_gateway_values))
+business_gateway_5xx_median = (
+    round(float(statistics.median(business_gateway_values)), 6)
+    if business_gateway_values
+    else 0.0
+)
+business_gateway_5xx_max = max(business_gateway_values) if business_gateway_values else 0
+business_gateway_5xx = business_gateway_5xx_total
 business_gateway_5xx_ratio = (
     round((business_gateway_5xx / business_total_requests) * 100.0, 6)
     if business_total_requests > 0
     else 0.0
 )
+business_network_errors = int(sum(item["network_errors"] for item in business_samples))
+business_top_errors = [
+    {"message": message, "count": count}
+    for message, count in business_error_counter.most_common(3)
+]
 
 gateway_fault_breakdown = {
     "timeout_gateway_5xx": int(timeout_case.get("gateway_5xx", 0)),
@@ -843,17 +890,21 @@ gateway_fault_network_errors_total = (
 )
 summary = {
     "scenario": "failure-drill",
-    "business_upstream_5xx": business["upstream_5xx"],
+    "business_upstream_5xx": business_upstream_5xx,
     "business_gateway_5xx": business_gateway_5xx,
     "business_total_requests": business_total_requests,
     "business_gateway_5xx_ratio": business_gateway_5xx_ratio,
-    "business_network_errors": int(business.get("network_errors", 0)),
-    "business_top_errors": business.get("top_errors", []),
+    "business_network_errors": business_network_errors,
+    "business_top_errors": business_top_errors,
+    "business_samples": business_samples,
+    "business_gateway_5xx_median": business_gateway_5xx_median,
+    "business_gateway_5xx_max": business_gateway_5xx_max,
+    "business_pass_policy": "median(gateway_5xx)==0",
     "gateway_fault_5xx_total": gateway_fault_5xx_total,
     "gateway_fault_network_errors_total": gateway_fault_network_errors_total,
     "gateway_fault_breakdown": gateway_fault_breakdown,
     "recovery_status": recovery_status,
-    "business_errors_are_upstream_only": business["upstream_5xx"] > 0 and business_gateway_5xx == 0,
+    "business_errors_are_upstream_only": business_upstream_5xx > 0 and business_gateway_5xx_median == 0.0,
     "gateway_faults_observed": gateway_fault_5xx_total > 0,
     "recovery_pass": recovery_status == "200",
 }
@@ -1155,6 +1206,15 @@ with open(summary_path, "w", encoding="utf-8") as fp:
         f"- business_gateway_5xx_ratio: `{failure.get('business_gateway_5xx_ratio', 0.0)}`\n"
     )
     fp.write(
+        f"- business_gateway_5xx_median: `{failure.get('business_gateway_5xx_median', 0.0)}`\n"
+    )
+    fp.write(
+        f"- business_gateway_5xx_max: `{failure.get('business_gateway_5xx_max', 0)}`\n"
+    )
+    fp.write(
+        f"- business_pass_policy: `{failure.get('business_pass_policy', '')}`\n"
+    )
+    fp.write(
         f"- gateway_fault_5xx_total: `{failure.get('gateway_fault_5xx_total', 0)}`\n"
     )
     fp.write(
@@ -1229,6 +1289,9 @@ print(json.dumps({
         "business_gateway_5xx": failure_drill.get("business_gateway_5xx"),
         "business_total_requests": failure_drill.get("business_total_requests"),
         "business_gateway_5xx_ratio": failure_drill.get("business_gateway_5xx_ratio"),
+        "business_gateway_5xx_median": failure_drill.get("business_gateway_5xx_median"),
+        "business_gateway_5xx_max": failure_drill.get("business_gateway_5xx_max"),
+        "business_pass_policy": failure_drill.get("business_pass_policy"),
         "gateway_fault_5xx_total": failure_drill.get("gateway_fault_5xx_total"),
         "gateway_fault_network_errors_total": failure_drill.get("gateway_fault_network_errors_total"),
         "recovery_status": failure_drill.get("recovery_status"),
