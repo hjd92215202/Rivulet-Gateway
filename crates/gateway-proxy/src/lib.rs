@@ -353,10 +353,10 @@ impl ProxyService {
                         endpoint_state.record_failure(cluster.passive_failure_threshold());
                         excluded_addresses.push(endpoint.address.clone());
                         final_outcome = Some(Err(ProxyConnectionError {
-                            error: GatewayError::Io(format!(
-                                "retryable upstream status {}",
-                                status_code
-                            )),
+                            error: tagged_upstream_io_error(
+                                "retryable_status",
+                                format!("retryable upstream status {}", status_code),
+                            ),
                             request: Some(request_context.clone()),
                             retries: attempt + 1,
                         }));
@@ -527,12 +527,20 @@ impl ProxyService {
         )
         .await
         .map_err(|_| {
-            GatewayError::Io(format!(
-                "connect upstream {} timed out after {:?}",
-                endpoint_address, policy.upstream_connect_timeout
-            ))
+            tagged_upstream_io_error(
+                "connect_timeout",
+                format!(
+                    "connect upstream {} timed out after {:?}",
+                    endpoint_address, policy.upstream_connect_timeout
+                ),
+            )
         })?
-        .map_err(|err| GatewayError::Io(format!("connect upstream {}: {}", endpoint_address, err)))
+        .map_err(|err| {
+            tagged_upstream_io_error(
+                "connect_error",
+                format!("connect upstream {}: {}", endpoint_address, err),
+            )
+        })
     }
 }
 
@@ -584,12 +592,17 @@ async fn read_upstream_response(
         let read = timeout(policy.upstream_read_timeout, upstream.read(&mut temp))
             .await
             .map_err(|_| {
-                GatewayError::Io(format!(
-                    "read upstream response timed out after {:?}",
-                    policy.upstream_read_timeout
-                ))
+                tagged_upstream_io_error(
+                    "read_timeout",
+                    format!(
+                        "read upstream response timed out after {:?}",
+                        policy.upstream_read_timeout
+                    ),
+                )
             })?
-            .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
+            .map_err(|err| {
+                tagged_upstream_io_error("read_error", format!("read upstream response: {}", err))
+            })?;
         if read == 0 {
             return Err(GatewayError::Protocol(
                 "upstream closed connection before response headers completed".into(),
@@ -632,12 +645,20 @@ async fn read_upstream_response(
             let read = timeout(policy.upstream_read_timeout, upstream.read(&mut temp))
                 .await
                 .map_err(|_| {
-                    GatewayError::Io(format!(
-                        "read upstream response timed out after {:?}",
-                        policy.upstream_read_timeout
-                    ))
+                    tagged_upstream_io_error(
+                        "read_timeout",
+                        format!(
+                            "read upstream response timed out after {:?}",
+                            policy.upstream_read_timeout
+                        ),
+                    )
                 })?
-                .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
+                .map_err(|err| {
+                    tagged_upstream_io_error(
+                        "read_error",
+                        format!("read upstream response: {}", err),
+                    )
+                })?;
             if read == 0 {
                 return Err(GatewayError::Protocol(
                     "upstream closed connection before response body completed".into(),
@@ -663,12 +684,20 @@ async fn read_upstream_response(
             let read = timeout(policy.upstream_read_timeout, upstream.read(&mut temp))
                 .await
                 .map_err(|_| {
-                    GatewayError::Io(format!(
-                        "read upstream response timed out after {:?}",
-                        policy.upstream_read_timeout
-                    ))
+                    tagged_upstream_io_error(
+                        "read_timeout",
+                        format!(
+                            "read upstream response timed out after {:?}",
+                            policy.upstream_read_timeout
+                        ),
+                    )
                 })?
-                .map_err(|err| GatewayError::Io(format!("read upstream response: {}", err)))?;
+                .map_err(|err| {
+                    tagged_upstream_io_error(
+                        "read_error",
+                        format!("read upstream response: {}", err),
+                    )
+                })?;
             if read == 0 {
                 break;
             }
@@ -1075,14 +1104,12 @@ impl HttpRequest {
         request_bytes.extend_from_slice(b"\r\n");
         request_bytes.extend_from_slice(&self.body);
 
-        upstream
-            .write_all(&request_bytes)
-            .await
-            .map_err(|err| GatewayError::Io(format!("write upstream request: {}", err)))?;
-        upstream
-            .flush()
-            .await
-            .map_err(|err| GatewayError::Io(format!("flush upstream request: {}", err)))?;
+        upstream.write_all(&request_bytes).await.map_err(|err| {
+            tagged_upstream_io_error("write_error", format!("write upstream request: {}", err))
+        })?;
+        upstream.flush().await.map_err(|err| {
+            tagged_upstream_io_error("flush_error", format!("flush upstream request: {}", err))
+        })?;
         Ok(())
     }
 }
@@ -1268,9 +1295,26 @@ fn is_retryable_status(status_code: u16) -> bool {
     matches!(status_code, 500 | 502 | 503 | 504)
 }
 
+fn tagged_upstream_io_error(kind: &str, message: String) -> GatewayError {
+    GatewayError::Io(format!("upstream_io/{}: {}", kind, message))
+}
+
 fn is_transient_upstream_io_error(error: &GatewayError) -> bool {
     match error {
         GatewayError::Io(message) => {
+            if let Some(tagged) = message.strip_prefix("upstream_io/") {
+                if let Some((kind, _)) = tagged.split_once(':') {
+                    return matches!(
+                        kind.trim(),
+                        "connect_timeout"
+                            | "connect_error"
+                            | "write_error"
+                            | "flush_error"
+                            | "read_timeout"
+                            | "read_error"
+                    );
+                }
+            }
             message.starts_with("connect upstream ")
                 || message.starts_with("write upstream request:")
                 || message.starts_with("flush upstream request:")
@@ -4038,6 +4082,21 @@ mod tests {
     fn graceful_downstream_close_rejects_upstream_timeout_error() {
         let error = GatewayError::Io("read upstream response timed out after 50ms".into());
         assert!(!is_graceful_downstream_close(&error));
+    }
+
+    #[test]
+    fn transient_upstream_io_detection_accepts_tagged_messages() {
+        let error = GatewayError::Io(
+            "upstream_io/read_timeout: read upstream response timed out after 50ms".into(),
+        );
+        assert!(is_transient_upstream_io_error(&error));
+    }
+
+    #[test]
+    fn transient_upstream_io_detection_rejects_non_transient_tagged_messages() {
+        let error =
+            GatewayError::Io("upstream_io/retryable_status: retryable upstream status 503".into());
+        assert!(!is_transient_upstream_io_error(&error));
     }
 
     #[tokio::test]
