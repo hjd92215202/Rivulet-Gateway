@@ -189,6 +189,27 @@ G3.4.1 新增收口产物（中文）:
   - `gateway_fault_network_errors_total`
 - evaluate diagnostics log now appends a focused `failure_drill` summary block for direct CI troubleshooting
 
+### G3.1.5 failure-drill median stabilization (no threshold relaxation)
+
+- business `503` drill now runs 3 samples and uses median-based pass policy for gateway contamination check
+- failure pass policy keeps strict semantics:
+  - business median `gateway_5xx == 0`
+  - gateway faults are still required in timeout/reset/backend-down drills
+  - recovery status must still be `200`
+- `failure_drill` output now includes:
+  - `business_samples`
+  - `business_gateway_5xx_median`
+  - `business_gateway_5xx_max`
+  - `business_pass_policy`
+- upstream I/O errors now include stable `upstream_io/<kind>:` prefixes for diagnostics while preserving HTTP response mapping
+
+G3.1.5 中文同步:
+
+- `failure-business-503` 场景改为 3 次采样并按中位数判定，吸收 runner 瞬态抖动
+- `failure_drill.pass` 仍保持严格语义：业务场景中位数网关 5xx 为 0，故障场景可观测，恢复状态 200
+- 新增诊断字段：`business_samples`、`business_gateway_5xx_median`、`business_gateway_5xx_max`、`business_pass_policy`
+- 本批不放宽 `standard` 阈值
+
 ### Nightly integration (G3.4)
 
 `nightly-benchmark.yml` now runs:

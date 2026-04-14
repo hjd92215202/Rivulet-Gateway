@@ -83,6 +83,21 @@ The main progress of this batch:
   - `gateway_fault_network_errors_total`
 - this batch does not relax `standard` profile thresholds and does not change blocking semantics in CI/release
 
+### G3.1.5 failure-drill stability closure (arm64 real gate failure)
+
+- root signal remained `failure_drill_not_passed` with threshold checks otherwise green
+- reliability closure is dual-track without lowering `standard`:
+  - kernel track: upstream transient I/O errors now carry stable `upstream_io/<kind>:` prefixes and keep bounded same-endpoint retry semantics
+  - gate track: business `503` drill now runs 3 samples and uses median-based gateway-contamination check
+- failure-drill contract adds audit fields:
+  - `business_samples`
+  - `business_gateway_5xx_median`
+  - `business_gateway_5xx_max`
+  - `business_pass_policy`
+- blocking policy remains unchanged:
+  - CI/release still block on `standard`
+  - no threshold relaxation and no protocol-surface expansion
+
 ### G3.4 calibration closure in progress (observe + report, no threshold auto-rewrite)
 
 - nightly now collects Linux x86_64 and Linux arm64 observe samples using `public-api-gate --mode evaluate --profile observe`

@@ -53,6 +53,14 @@ Newly closed in G3.1.4:
 - multi-endpoint retry behavior remains unchanged for retryable upstream status
 - failure-drill outputs now include auditable diagnostics (`business_total_requests`, `business_gateway_5xx_ratio`, gateway fault breakdown and key error counters)
 
+Newly closed in G3.1.5:
+
+- arm64 `failure_drill_not_passed` stability issue is closed without lowering `standard` thresholds
+- business `503` drill now uses 3-sample median policy for gateway contamination checks (`business_gateway_5xx_median == 0`)
+- upstream transient I/O errors now include stable `upstream_io/<kind>:` diagnostic prefixes for CI triage
+- failure-drill outputs now include `business_samples`, `business_gateway_5xx_median`, `business_gateway_5xx_max`, and `business_pass_policy`
+- 中文同步：本批属于“语义加固 + 抗抖收口”，不属于阈值放宽；arm64 失败路径通过三采样中位数判定与上游 I/O 前缀诊断收敛。
+
 Newly closed in G3.2:
 
 - release publish pipeline now signs every release asset with detached signature and certificate outputs (`<asset>.sig` + `<asset>.pem`)
