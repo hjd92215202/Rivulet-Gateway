@@ -403,36 +403,36 @@ jobs:
           fi
 
           python3 - "$current_tag" <<'PY' >> "$GITHUB_OUTPUT"
-import re
-import subprocess
-import sys
+          import re
+          import subprocess
+          import sys
 
-current_tag = sys.argv[1]
-pattern = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
-current_match = pattern.match(current_tag)
-if current_match is None:
-    raise SystemExit(f"current tag is not semver-like: {current_tag}")
+          current_tag = sys.argv[1]
+          pattern = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+          current_match = pattern.match(current_tag)
+          if current_match is None:
+              raise SystemExit(f"current tag is not semver-like: {current_tag}")
 
-current_version = tuple(int(part) for part in current_match.groups())
-tags = subprocess.check_output(["git", "tag", "--list", "v*"], text=True).split()
-candidates = []
-for tag in tags:
-    match = pattern.match(tag)
-    if match is None:
-        continue
-    version = tuple(int(part) for part in match.groups())
-    if version < current_version:
-        candidates.append((version, tag))
+          current_version = tuple(int(part) for part in current_match.groups())
+          tags = subprocess.check_output(["git", "tag", "--list", "v*"], text=True).split()
+          candidates = []
+          for tag in tags:
+              match = pattern.match(tag)
+              if match is None:
+                  continue
+              version = tuple(int(part) for part in match.groups())
+              if version < current_version:
+                  candidates.append((version, tag))
 
-if not candidates:
-    raise SystemExit(
-        f"no previous release tag found before {current_tag}; disposable lifecycle full mode requires one"
-    )
+          if not candidates:
+              raise SystemExit(
+                  f"no previous release tag found before {current_tag}; disposable lifecycle full mode requires one"
+              )
 
-previous_tag = max(candidates, key=lambda item: item[0])[1]
-print(f"current_tag={current_tag}")
-print(f"previous_tag={previous_tag}")
-PY
+          previous_tag = max(candidates, key=lambda item: item[0])[1]
+          print(f"current_tag={current_tag}")
+          print(f"previous_tag={previous_tag}")
+          PY
 
       - name: Download Linux x86_64 release artifacts
         uses: actions/download-artifact@v6
@@ -515,36 +515,36 @@ PY
           fi
 
           python3 - "$current_tag" <<'PY' >> "$GITHUB_OUTPUT"
-import re
-import subprocess
-import sys
+          import re
+          import subprocess
+          import sys
 
-current_tag = sys.argv[1]
-pattern = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
-current_match = pattern.match(current_tag)
-if current_match is None:
-    raise SystemExit(f"current tag is not semver-like: {current_tag}")
+          current_tag = sys.argv[1]
+          pattern = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+          current_match = pattern.match(current_tag)
+          if current_match is None:
+              raise SystemExit(f"current tag is not semver-like: {current_tag}")
 
-current_version = tuple(int(part) for part in current_match.groups())
-tags = subprocess.check_output(["git", "tag", "--list", "v*"], text=True).split()
-candidates = []
-for tag in tags:
-    match = pattern.match(tag)
-    if match is None:
-        continue
-    version = tuple(int(part) for part in match.groups())
-    if version < current_version:
-        candidates.append((version, tag))
+          current_version = tuple(int(part) for part in current_match.groups())
+          tags = subprocess.check_output(["git", "tag", "--list", "v*"], text=True).split()
+          candidates = []
+          for tag in tags:
+              match = pattern.match(tag)
+              if match is None:
+                  continue
+              version = tuple(int(part) for part in match.groups())
+              if version < current_version:
+                  candidates.append((version, tag))
 
-if not candidates:
-    raise SystemExit(
-        f"no previous release tag found before {current_tag}; disposable lifecycle full mode requires one"
-    )
+          if not candidates:
+              raise SystemExit(
+                  f"no previous release tag found before {current_tag}; disposable lifecycle full mode requires one"
+              )
 
-previous_tag = max(candidates, key=lambda item: item[0])[1]
-print(f"current_tag={current_tag}")
-print(f"previous_tag={previous_tag}")
-PY
+          previous_tag = max(candidates, key=lambda item: item[0])[1]
+          print(f"current_tag={current_tag}")
+          print(f"previous_tag={previous_tag}")
+          PY
 
       - name: Download Linux arm64 release artifacts
         uses: actions/download-artifact@v6
