@@ -226,6 +226,20 @@ jobs:
             --window 40 \
             --output-dir "$RUNNER_TEMP/rivulet-nightly-streak-release"
 
+      - name: Build threshold PR checklist
+        run: |
+          bash ./scripts/public-api-threshold-pr-checklist.sh \
+            --report "$RUNNER_TEMP/rivulet-nightly-calibration/calibration-report.json" \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-threshold-pr-checklist"
+
+      - name: Build milestone-2 closure status
+        run: |
+          bash ./scripts/public-api-milestone2-closure-status.sh \
+            --ci-streak "$RUNNER_TEMP/rivulet-nightly-streak-ci/streak-report.json" \
+            --release-streak "$RUNNER_TEMP/rivulet-nightly-streak-release/streak-report.json" \
+            --calibration-report "$RUNNER_TEMP/rivulet-nightly-calibration/calibration-report.json" \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-milestone2-closure"
+
       - name: Upload calibration and streak reports
         if: always()
         uses: actions/upload-artifact@v6
@@ -233,6 +247,8 @@ jobs:
           name: rivulet-nightly-public-api-calibration
           path: |
             ${{ runner.temp }}/rivulet-nightly-calibration
+            ${{ runner.temp }}/rivulet-nightly-threshold-pr-checklist
             ${{ runner.temp }}/rivulet-nightly-streak-ci
             ${{ runner.temp }}/rivulet-nightly-streak-release
+            ${{ runner.temp }}/rivulet-nightly-milestone2-closure
           if-no-files-found: ignore
