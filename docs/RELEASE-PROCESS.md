@@ -54,6 +54,23 @@ For M2 closure period, threshold tuning must follow this strict sequence and rem
 7. Update bilingual docs in the same threshold PR (`LINUX-BASELINE-BENCHMARK`, `PRODUCTION-READINESS`, `MILESTONES` at minimum).
 8. If post-merge CI/release dual-arch gate shows consecutive regressions, revert threshold PR immediately.
 
+### M2 Nightly Operating Loop (Closure Sprint)
+
+During M2 closure sprint, operate nightly outputs with one fixed routine:
+
+1. Read `m2-nightly-review-package.md` first as the single entry.
+2. Follow the mandatory evidence order from the package:
+   - `calibration-report.json`
+   - `threshold-change-proposal.md`
+   - `threshold-pr-checklist.md`
+   - `closure-weekly-report.md`
+   - `milestone2-closure-status.json`
+3. If `ready_for_threshold_pr` is false, keep observe-only sampling and do not open threshold PR.
+4. If threshold PR is opened, keep changes limited to `PUBLIC_API_STANDARD_<ARCH>_*` with one-step budget (`<=10%`).
+5. Use `m2-cutover-check.json` as final cutover gate:
+   - `cutover_ready=true` -> execute M2->M3 docs cutover
+   - otherwise continue M2 sampling and review loop
+
 ### Local Pre-Release Validation
 
 Minimum local checks before pushing a release tag:
@@ -195,3 +212,20 @@ cargo test --workspace
 6. 若证据未成熟，禁止发起阈值 PR，仅继续 nightly observe 采样。
 7. 同一 PR 必须同步更新中英文文档（至少包含 `LINUX-BASELINE-BENCHMARK`、`PRODUCTION-READINESS`、`MILESTONES`）。
 8. 合并后若出现连续回归，按清单要求立即回滚阈值 PR。
+
+### M2 夜间运营闭环（收口冲刺）
+
+在 M2 收口冲刺阶段，nightly 产物按固定闭环执行：
+
+1. 先读 `m2-nightly-review-package.md`，作为唯一入口。
+2. 严格按包内固定顺序审阅证据：
+   - `calibration-report.json`
+   - `threshold-change-proposal.md`
+   - `threshold-pr-checklist.md`
+   - `closure-weekly-report.md`
+   - `milestone2-closure-status.json`
+3. 若 `ready_for_threshold_pr=false`，只允许继续 observe 采样，禁止发起阈值 PR。
+4. 若发起阈值 PR，变更必须仅限 `PUBLIC_API_STANDARD_<ARCH>_*` 且单步预算不超过 `10%`。
+5. 以 `m2-cutover-check.json` 作为切线最终门槛：
+   - `cutover_ready=true`：执行 M2->M3 文档切线；
+   - 否则继续 M2 采样与评审闭环。

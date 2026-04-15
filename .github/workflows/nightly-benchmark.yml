@@ -256,6 +256,22 @@ jobs:
             --window 10 \
             --output-dir "$RUNNER_TEMP/rivulet-nightly-closure-weekly"
 
+      - name: Build M2 nightly review package
+        run: |
+          bash ./scripts/public-api-nightly-review-package.sh \
+            --calibration-report "$RUNNER_TEMP/rivulet-nightly-calibration/calibration-report.json" \
+            --threshold-proposal "$RUNNER_TEMP/rivulet-nightly-threshold-change-proposal/threshold-change-proposal.md" \
+            --threshold-checklist "$RUNNER_TEMP/rivulet-nightly-threshold-pr-checklist/threshold-pr-checklist.md" \
+            --closure-weekly "$RUNNER_TEMP/rivulet-nightly-closure-weekly/closure-weekly-report.md" \
+            --closure-status "$RUNNER_TEMP/rivulet-nightly-milestone2-closure/milestone2-closure-status.json" \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-review-package"
+
+      - name: Build M2 cutover readiness check
+        run: |
+          bash ./scripts/public-api-m2-cutover-check.sh \
+            --closure-status "$RUNNER_TEMP/rivulet-nightly-milestone2-closure/milestone2-closure-status.json" \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-cutover-check"
+
       - name: Upload calibration and streak reports
         if: always()
         uses: actions/upload-artifact@v6
@@ -269,4 +285,6 @@ jobs:
             ${{ runner.temp }}/rivulet-nightly-streak-release
             ${{ runner.temp }}/rivulet-nightly-milestone2-closure
             ${{ runner.temp }}/rivulet-nightly-closure-weekly
+            ${{ runner.temp }}/rivulet-nightly-review-package
+            ${{ runner.temp }}/rivulet-nightly-cutover-check
           if-no-files-found: ignore

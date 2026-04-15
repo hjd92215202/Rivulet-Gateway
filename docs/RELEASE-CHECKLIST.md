@@ -66,6 +66,14 @@ Release target: `v<version>`
 - [ ] Bilingual docs updated in same PR (`LINUX-BASELINE-BENCHMARK`, `PRODUCTION-READINESS`, `MILESTONES` minimum)
 - [ ] Rollback trigger and rollback command path are documented
 
+### M2 Closure Sprint Nightly Checklist
+
+- [ ] `m2-nightly-review-package.md` is present and reviewed first
+- [ ] Package indicates `ready_for_threshold_pr=true` before any threshold PR is opened
+- [ ] `m2-cutover-check.json` is reviewed as final closure gate
+- [ ] If `cutover_ready=false`, no M2->M3 docs cutover is attempted
+- [ ] If `cutover_ready=true`, M2 completion + M3 kickoff docs update is prepared as isolated commit
+
 ### Recommended Linux Host Validation
 
 - [ ] `bash ./scripts/linux-postinstall-validate.sh --tag <version> --host <host:port>`
@@ -138,6 +146,14 @@ Release target: `v<version>`
 - [ ] PR 描述已显式声明 `ready_for_threshold_pr=true`
 - [ ] 同一 PR 完成中英文文档同步（至少 `LINUX-BASELINE-BENCHMARK`、`PRODUCTION-READINESS`、`MILESTONES`）
 - [ ] 已写明回滚触发条件与回滚执行路径
+
+### M2 收口冲刺 Nightly 清单
+
+- [ ] `m2-nightly-review-package.md` 已生成并作为首个审阅入口
+- [ ] 在 `ready_for_threshold_pr=true` 之前不发起阈值 PR
+- [ ] `m2-cutover-check.json` 已作为收口最终门槛审阅
+- [ ] 若 `cutover_ready=false`，不执行 M2->M3 文档切线
+- [ ] 若 `cutover_ready=true`，以独立提交完成 M2 完成标记与 M3 启动文档更新
 
 ### 推荐 Linux 主机验证
 

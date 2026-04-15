@@ -101,6 +101,12 @@ G3.4.2 新增收口（执行加固）：
 - 里程碑收口状态新增 `recent_failure_reasons`（基于 streak run 明细聚合）
 - nightly 汇总新增 `closure-weekly-report.md`，用于 observe 趋势与收口证据成熟度周报
 
+G3.4.3 新增收口（冲刺运营闭环）：
+
+- nightly 汇总新增统一审阅入口 `m2-nightly-review-package.md`（固定证据顺序与决策规则）
+- nightly 汇总新增切线判定产物 `m2-cutover-check.json/.md`（用于 M2->M3 切线门槛）
+- 收口执行口径固化为“先审阅包、后判定、再动作”，避免跨轮次执行漂移
+
 G3.4.1 新增收口（执行工具链）:
 
 - 校准报告新增保守建议字段：`recommended_thresholds` 与 `change_budget`

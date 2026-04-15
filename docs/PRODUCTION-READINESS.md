@@ -166,6 +166,24 @@ The main progress of this batch:
   - 仅报告，不因 streak 计数增加新的硬阻断
   - 不自动回写阈值文件
 
+### G3.4.3 closure sprint operating loop (M2 first, then M3)
+
+- nightly summary now generates `m2-nightly-review-package.md` as one ordered entry point for closure review.
+- nightly summary now generates `m2-cutover-check.json/.md` as explicit M2->M3 cutover readiness signal.
+- operating rule is now stable:
+  - review package first
+  - keep threshold PR disabled when `ready_for_threshold_pr=false`
+  - execute docs cutover only when `cutover_ready=true`
+
+### G3.4.3 收口冲刺运营闭环（先 M2，后 M3）
+
+- nightly 汇总新增 `m2-nightly-review-package.md`，作为收口审阅统一入口（固定顺序）。
+- nightly 汇总新增 `m2-cutover-check.json/.md`，用于 M2->M3 切线可执行判定。
+- 运营规则固定为：
+  - 先审阅 package；
+  - `ready_for_threshold_pr=false` 时禁止阈值 PR；
+  - 仅在 `cutover_ready=true` 时执行文档切线。
+
 ### CI hang troubleshooting checklist
 
 1. check fixture backend shutdown signal path and confirm SIGTERM exits within bounded time
