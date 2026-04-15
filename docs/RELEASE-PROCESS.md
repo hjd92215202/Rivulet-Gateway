@@ -49,8 +49,10 @@ For M2 closure period, threshold tuning must follow this strict sequence and rem
 2. Open a threshold PR only when evidence maturity is ready and changes stay within one-step budget (`<=10%`).
 3. Threshold PR must change only `PUBLIC_API_STANDARD_<ARCH>_*` keys in `scripts/public-api-thresholds.env`.
 4. Threshold PR description must include links or references to nightly evidence artifacts.
-5. Update bilingual docs in the same threshold PR (`LINUX-BASELINE-BENCHMARK`, `PRODUCTION-READINESS`, `MILESTONES` at minimum).
-6. If post-merge CI/release dual-arch gate shows consecutive regressions, revert threshold PR immediately.
+5. Threshold PR description must explicitly declare `ready_for_threshold_pr=true` (evidence maturity satisfied).
+6. If evidence is not mature, do not open threshold PR; continue nightly observe sampling only.
+7. Update bilingual docs in the same threshold PR (`LINUX-BASELINE-BENCHMARK`, `PRODUCTION-READINESS`, `MILESTONES` at minimum).
+8. If post-merge CI/release dual-arch gate shows consecutive regressions, revert threshold PR immediately.
 
 ### Local Pre-Release Validation
 
@@ -189,5 +191,7 @@ cargo test --workspace
 2. 仅在证据成熟度达标时发起阈值 PR，且单次变更预算不超过 `10%`。
 3. 阈值 PR 只允许修改 `scripts/public-api-thresholds.env` 中 `PUBLIC_API_STANDARD_<ARCH>_*` 键。
 4. PR 描述必须附 nightly 证据链接或可追溯引用。
-5. 同一 PR 必须同步更新中英文文档（至少包含 `LINUX-BASELINE-BENCHMARK`、`PRODUCTION-READINESS`、`MILESTONES`）。
-6. 合并后若出现连续回归，按清单要求立即回滚阈值 PR。
+5. PR 描述必须显式声明 `ready_for_threshold_pr=true`（证据成熟）。
+6. 若证据未成熟，禁止发起阈值 PR，仅继续 nightly observe 采样。
+7. 同一 PR 必须同步更新中英文文档（至少包含 `LINUX-BASELINE-BENCHMARK`、`PRODUCTION-READINESS`、`MILESTONES`）。
+8. 合并后若出现连续回归，按清单要求立即回滚阈值 PR。

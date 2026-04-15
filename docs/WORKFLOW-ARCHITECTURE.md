@@ -77,6 +77,7 @@ flowchart TD
 - Gate jobs now run with explicit timeout and long-run evaluate windows.
 - `script-standards` now includes fixture backend SIGTERM termination regression check.
 - `script-standards` now also enforces `print_stage` -> `stderr` log channel contract.
+- `script-standards` now also enforces threshold PR evidence declaration (`ready_for_threshold_pr=true`) when threshold keys change.
 - `systemd-lifecycle-linux-x86_64` and `systemd-lifecycle-linux-arm64` now run with workflow-level timeout guards.
 
 ### Audit artifacts
@@ -154,6 +155,7 @@ G3.4.1 说明（中文）:
 - 门禁 job 已接入明确超时与长跑 evaluate 窗口。
 - `script-standards` 已加入 fixture backend 的 SIGTERM 退出回归校验。
 - `script-standards` 新增 `print_stage` 必须写 `stderr` 的通道约束。
+- `script-standards` 在阈值键变更时新增证据成熟声明约束（PR 必须包含 `ready_for_threshold_pr=true`）。
 - `systemd-lifecycle-linux-x86_64` 与 `systemd-lifecycle-linux-arm64` 已增加 workflow 级超时保护。
 
 ### 审计产物

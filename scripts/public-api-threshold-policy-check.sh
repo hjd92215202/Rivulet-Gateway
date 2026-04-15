@@ -24,6 +24,7 @@ Policy:
   - each key step change must stay within 10% budget
   - when effective threshold values change, required docs must be updated
   - on pull_request, PR body must include nightly evidence links
+  - on pull_request, PR body must explicitly declare ready_for_threshold_pr=true
 EOF
 }
 
@@ -80,6 +81,7 @@ check_pr_body_evidence() {
 
   python3 - "$GITHUB_EVENT_PATH" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -101,6 +103,16 @@ if missing:
     raise SystemExit(
         "pull request body is missing nightly evidence links/keywords: "
         + ", ".join(missing)
+    )
+
+ready_true_patterns = (
+    r"ready_for_threshold_pr\s*[:=]\s*true",
+    r"\"ready_for_threshold_pr\"\s*:\s*true",
+)
+
+if not any(re.search(pattern, body) for pattern in ready_true_patterns):
+    raise SystemExit(
+        "pull request body must declare evidence maturity with ready_for_threshold_pr=true"
     )
 PY
 }

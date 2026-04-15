@@ -62,6 +62,7 @@ Release target: `v<version>`
 - [ ] Change scope only touches `PUBLIC_API_STANDARD_<ARCH>_*` keys
 - [ ] One-step change budget per key stays within `<=10%`
 - [ ] PR description includes nightly artifact links/references
+- [ ] PR description explicitly declares `ready_for_threshold_pr=true`
 - [ ] Bilingual docs updated in same PR (`LINUX-BASELINE-BENCHMARK`, `PRODUCTION-READINESS`, `MILESTONES` minimum)
 - [ ] Rollback trigger and rollback command path are documented
 
@@ -134,6 +135,7 @@ Release target: `v<version>`
 - [ ] 变更范围仅包含 `PUBLIC_API_STANDARD_<ARCH>_*` 键
 - [ ] 每个键的单次调整幅度不超过 `<=10%`
 - [ ] PR 描述已附带 nightly 产物链接/引用
+- [ ] PR 描述已显式声明 `ready_for_threshold_pr=true`
 - [ ] 同一 PR 完成中英文文档同步（至少 `LINUX-BASELINE-BENCHMARK`、`PRODUCTION-READINESS`、`MILESTONES`）
 - [ ] 已写明回滚触发条件与回滚执行路径
 
