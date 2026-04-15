@@ -37,6 +37,21 @@ This document defines the formal release process for `Rivulet Gateway / 溪流�
 9. Check that the GitHub Release page contains `zip`, `tar.gz`, `rpm`, `SHA256SUMS.txt`, detached signature/certificate files, and `SBOM.spdx.json`, and that every asset filename matches the tag version.
 10. Record remaining risks and post-release follow-up items in the roadmap.
 
+### M2 Threshold Tuning Review Flow
+
+For M2 closure period, threshold tuning must follow this strict sequence and remain report-driven:
+
+1. Review nightly artifacts in order:
+   - `calibration-report.json`
+   - `threshold-change-proposal.md`
+   - `threshold-pr-checklist.md`
+   - `closure-weekly-report.md`
+2. Open a threshold PR only when evidence maturity is ready and changes stay within one-step budget (`<=10%`).
+3. Threshold PR must change only `PUBLIC_API_STANDARD_<ARCH>_*` keys in `scripts/public-api-thresholds.env`.
+4. Threshold PR description must include links or references to nightly evidence artifacts.
+5. Update bilingual docs in the same threshold PR (`LINUX-BASELINE-BENCHMARK`, `PRODUCTION-READINESS`, `MILESTONES` at minimum).
+6. If post-merge CI/release dual-arch gate shows consecutive regressions, revert threshold PR immediately.
+
 ### Local Pre-Release Validation
 
 Minimum local checks before pushing a release tag:
@@ -161,3 +176,18 @@ cargo test --workspace
 
 - 一次性环境全生命周期门禁已接入 release 阻断，但当前仍依赖 GitHub 共享 runner，阈值与吞吐口径需要持续校准。
 - 更大规模公网能力声明仍不包含 HTTP/2、mTLS、WebSocket。
+
+### M2 阈值评审流程（收口阶段）
+
+在 Milestone 2 收口阶段，阈值调整必须按“先报告、后评审、再小步提交”执行：
+
+1. 按顺序审阅 nightly 产物：
+   - `calibration-report.json`
+   - `threshold-change-proposal.md`
+   - `threshold-pr-checklist.md`
+   - `closure-weekly-report.md`
+2. 仅在证据成熟度达标时发起阈值 PR，且单次变更预算不超过 `10%`。
+3. 阈值 PR 只允许修改 `scripts/public-api-thresholds.env` 中 `PUBLIC_API_STANDARD_<ARCH>_*` 键。
+4. PR 描述必须附 nightly 证据链接或可追溯引用。
+5. 同一 PR 必须同步更新中英文文档（至少包含 `LINUX-BASELINE-BENCHMARK`、`PRODUCTION-READINESS`、`MILESTONES`）。
+6. 合并后若出现连续回归，按清单要求立即回滚阈值 PR。

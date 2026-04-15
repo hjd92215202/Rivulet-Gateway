@@ -36,6 +36,14 @@ jobs:
       - name: Validate public API gate schema
         run: bash ./scripts/linux-public-api-gate.sh --mode schema-check --profile standard
 
+      - name: Enforce threshold tuning policy
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: bash ./scripts/public-api-threshold-policy-check.sh
+
   test-linux:
     name: Test Linux x86_64
     runs-on: ubuntu-24.04

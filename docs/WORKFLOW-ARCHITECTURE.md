@@ -71,7 +71,9 @@ flowchart TD
 - Nightly now collects observe samples on both Linux architectures and emits calibration/streak reports for threshold tuning.
 - Nightly summary now also emits:
   - threshold PR checklist (`threshold-pr-checklist.md`)
+  - threshold change proposal (`threshold-change-proposal.md`)
   - milestone-2 closure synthesis (`milestone2-closure-status.json/.md`)
+  - closure weekly report (`closure-weekly-report.md`)
 - Gate jobs now run with explicit timeout and long-run evaluate windows.
 - `script-standards` now includes fixture backend SIGTERM termination regression check.
 - `script-standards` now also enforces `print_stage` -> `stderr` log channel contract.
@@ -100,8 +102,10 @@ Nightly calibration summary uploads:
 - `streak-report.json`
 - `streak-report.md`
 - `threshold-pr-checklist.md`
+- `threshold-change-proposal.md`
 - `milestone2-closure-status.json`
 - `milestone2-closure-status.md`
+- `closure-weekly-report.md`
 
 These artifacts support manual threshold tuning and milestone-2 closure tracking (10 consecutive dual-arch green runs in both CI and release).
 

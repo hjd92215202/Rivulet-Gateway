@@ -1,4 +1,4 @@
-# Release Checklist / 发布检查清单
+﻿# Release Checklist / 发布检查清单
 
 ## English
 
@@ -56,6 +56,15 @@ Release target: `v<version>`
 - [ ] Record failed or skipped validations
 - [ ] Update roadmap follow-up items
 
+### M2 Threshold Tuning PR Checklist
+
+- [ ] Nightly evidence reviewed in order: calibration -> proposal -> checklist -> weekly
+- [ ] Change scope only touches `PUBLIC_API_STANDARD_<ARCH>_*` keys
+- [ ] One-step change budget per key stays within `<=10%`
+- [ ] PR description includes nightly artifact links/references
+- [ ] Bilingual docs updated in same PR (`LINUX-BASELINE-BENCHMARK`, `PRODUCTION-READINESS`, `MILESTONES` minimum)
+- [ ] Rollback trigger and rollback command path are documented
+
 ### Recommended Linux Host Validation
 
 - [ ] `bash ./scripts/linux-postinstall-validate.sh --tag <version> --host <host:port>`
@@ -86,10 +95,10 @@ Release target: `v<version>`
 - [ ] Linux x86_64 CI 通过
 - [ ] Windows x86_64 CI 通过
 - [ ] Linux arm64 CI 通过
-- [ ] CI 中 Linux x86_64 与 Linux arm64 的 systemd 生命周期门禁通过
+- [ ] CI 中 Linux x86_64 和 Linux arm64 的 systemd 生命周期门禁通过
 - [ ] package job 上传了预期产物
-- [ ] release workflow 中 Linux x86_64 与 Linux arm64 的 systemd 生命周期门禁通过
-- [ ] release workflow 中 Linux x86_64 与 Linux arm64 的一次性环境全生命周期门禁通过
+- [ ] release workflow 中 Linux x86_64 和 Linux arm64 的 systemd 生命周期门禁通过
+- [ ] release workflow 中 Linux x86_64 和 Linux arm64 的一次性环境全生命周期门禁通过
 - [ ] 一次性环境全生命周期门禁的 tar.gz 路径通过全流程（`安装 -> 升级 -> 回滚 -> 卸载`）
 - [ ] 一次性环境全生命周期门禁的 rpm 路径通过安装/卸载流程
 - [ ] release workflow 生成了 `SHA256SUMS.txt`
@@ -110,7 +119,7 @@ Release target: `v<version>`
 - [ ] `SHA256SUMS.txt`
 - [ ] `SHA256SUMS.sig`
 - [ ] `SHA256SUMS.pem`
-- [ ] 每个发布资产都带有对应的 `.sig` 与 `.pem`
+- [ ] 每个发布资产都带有对应的 `.sig` 和 `.pem`
 - [ ] `SBOM.spdx.json`
 
 ### 发布后记录
@@ -118,6 +127,15 @@ Release target: `v<version>`
 - [ ] 记录已知边界
 - [ ] 记录失败或跳过的验证
 - [ ] 更新路线图后续事项
+
+### M2 阈值调优 PR 清单
+
+- [ ] 已按顺序审阅 nightly 证据：`calibration -> proposal -> checklist -> weekly`
+- [ ] 变更范围仅包含 `PUBLIC_API_STANDARD_<ARCH>_*` 键
+- [ ] 每个键的单次调整幅度不超过 `<=10%`
+- [ ] PR 描述已附带 nightly 产物链接/引用
+- [ ] 同一 PR 完成中英文文档同步（至少 `LINUX-BASELINE-BENCHMARK`、`PRODUCTION-READINESS`、`MILESTONES`）
+- [ ] 已写明回滚触发条件与回滚执行路径
 
 ### 推荐 Linux 主机验证
 
