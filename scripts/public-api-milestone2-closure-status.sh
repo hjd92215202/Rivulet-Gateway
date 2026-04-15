@@ -135,7 +135,40 @@ def parse_streak(payload: dict, workflow_name: str):
         "remaining_to_target": remaining,
         "inspected_runs": int(payload.get("inspected_runs", 0)),
         "generated_at": payload.get("generated_at"),
+        "runs": payload.get("runs", []),
     }
+
+
+def aggregate_failure_reasons(workflow_block: dict):
+    counts = {}
+    for run in workflow_block.get("runs", []):
+        if run.get("dual_arch_success", False):
+            continue
+
+        run_reasons = []
+        required_jobs = run.get("required_jobs", {})
+        for job_name, job_state in required_jobs.items():
+            present = bool(job_state.get("present", False))
+            conclusion = str(job_state.get("conclusion") or "unknown")
+            if not present:
+                run_reasons.append(f"{workflow_block['workflow']}/job_missing/{job_name}")
+            elif conclusion != "success":
+                run_reasons.append(f"{workflow_block['workflow']}/job_failed/{job_name}/{conclusion}")
+
+        run_conclusion = str(run.get("conclusion") or "unknown")
+        if run_conclusion != "success":
+            run_reasons.append(f"{workflow_block['workflow']}/run_conclusion/{run_conclusion}")
+
+        if not run_reasons:
+            run_reasons.append(f"{workflow_block['workflow']}/dual_arch_not_success")
+
+        for reason in run_reasons:
+            counts[reason] = counts.get(reason, 0) + 1
+
+    return [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
 
 
 ci_payload = load_json(ci_path, "ci streak report")
@@ -157,14 +190,19 @@ for arch, current in recommended_thresholds.items():
         if float(value) != float(baseline.get(metric, value)):
             recommendation_count += 1
 
-overall_ready = ci_block["closure_ready"] and release_block["closure_ready"]
+ci_closure_ready = ci_block["closure_ready"]
+release_closure_ready = release_block["closure_ready"]
+overall_ready = ci_closure_ready and release_closure_ready
 remaining = max(ci_block["remaining_to_target"], release_block["remaining_to_target"])
+recent_failure_reasons = aggregate_failure_reasons(ci_block) + aggregate_failure_reasons(release_block)
 
 status = {
     "generated_at": datetime.now(timezone.utc).isoformat(),
     "milestone": "Milestone 2",
     "ci": ci_block,
     "release": release_block,
+    "ci_closure_ready": ci_closure_ready,
+    "release_closure_ready": release_closure_ready,
     "calibration": {
         "profile": calibration_payload.get("profile", "unknown"),
         "generated_at": calibration_payload.get("generated_at"),
@@ -174,6 +212,7 @@ status = {
     },
     "overall_closure_ready": overall_ready,
     "remaining_to_target": remaining,
+    "recent_failure_reasons": recent_failure_reasons,
     "next_action": (
         "promote Milestone 2 to completed and move roadmap focus to Milestone 3"
         if overall_ready
@@ -184,11 +223,13 @@ status = {
 result_path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
 
 lines = [
-    "# Milestone 2 Closure Status / 里程碑 2 收口状态",
+    "# Milestone 2 Closure Status / Milestone 2 收口状态",
     "",
     "## Overview / 概览",
     "",
     f"- generated_at: `{status['generated_at']}`",
+    f"- ci_closure_ready: `{status['ci_closure_ready']}`",
+    f"- release_closure_ready: `{status['release_closure_ready']}`",
     f"- overall_closure_ready: `{status['overall_closure_ready']}`",
     f"- remaining_to_target: `{status['remaining_to_target']}`",
     f"- next_action: `{status['next_action']}`",
@@ -218,7 +259,18 @@ else:
     lines.append("- no immediate manual review items")
 
 lines.append("")
-summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+lines.append("## Recent Failure Reasons / 最近失败原因聚合")
+lines.append("")
+if recent_failure_reasons:
+    lines.append("| reason | count |")
+    lines.append("| --- | ---: |")
+    for item in recent_failure_reasons:
+        lines.append(f"| `{item['reason']}` | {item['count']} |")
+else:
+    lines.append("- no recent failure reasons were observed in inspected streak runs")
+
+lines.append("")
+summary_path.write_text("\n".join(lines), encoding="utf-8")
 PY
 
 echo "result: $RESULT_PATH"

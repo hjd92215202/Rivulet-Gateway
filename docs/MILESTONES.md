@@ -87,6 +87,20 @@ Newly closed in G3.4.1 (closure execution tooling):
 - nightly summary now generates milestone-2 closure synthesis artifacts (`milestone2-closure-status.json` / `milestone2-closure-status.md`)
 - streak reports now expose `closure_ready` and `remaining_to_target` for explicit closure tracking
 
+Newly closed in G3.4.2 (closure execution reinforcement):
+
+- nightly summary now generates `threshold-change-proposal.md` for architecture-aware `standard` threshold proposal packaging
+- milestone closure synthesis now exposes `ci_closure_ready` and `release_closure_ready` as top-level fields
+- milestone closure synthesis now aggregates `recent_failure_reasons` from streak run details
+- nightly summary now generates `closure-weekly-report.md` for observe sample trend and closure evidence maturity
+
+G3.4.2 新增收口（执行加固）：
+
+- nightly 汇总新增 `threshold-change-proposal.md`，用于按架构 `standard` 阈值建议包
+- 里程碑收口状态新增顶层字段：`ci_closure_ready`、`release_closure_ready`
+- 里程碑收口状态新增 `recent_failure_reasons`（基于 streak run 明细聚合）
+- nightly 汇总新增 `closure-weekly-report.md`，用于 observe 趋势与收口证据成熟度周报
+
 G3.4.1 新增收口（执行工具链）:
 
 - 校准报告新增保守建议字段：`recommended_thresholds` 与 `change_budget`

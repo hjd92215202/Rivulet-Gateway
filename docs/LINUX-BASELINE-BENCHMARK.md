@@ -1,5 +1,73 @@
 # Linux Baseline Benchmark / Linux 基线压测
 
+## M2 Closure Addendum (G3.4.2) / M2 收口补充（G3.4.2）
+
+### English
+
+Nightly calibration summary now includes two additional report artifacts for conservative, review-driven threshold tuning:
+
+- `threshold-change-proposal.md`
+- `closure-weekly-report.md`
+
+Scripts:
+
+```bash
+bash ./scripts/public-api-threshold-change-proposal.sh \
+  --report ./target/public-api-calibration/manual/calibration-report.json \
+  --output-dir ./target/public-api-threshold-proposal/manual
+```
+
+```bash
+bash ./scripts/public-api-closure-weekly-report.sh \
+  --calibration-report ./target/public-api-calibration/manual/calibration-report.json \
+  --ci-streak ./target/public-api-streak/ci/streak-report.json \
+  --release-streak ./target/public-api-streak/release/streak-report.json \
+  --closure-status ./target/public-api-milestone2-closure/manual/milestone2-closure-status.json \
+  --window 10 \
+  --output-dir ./target/public-api-closure-weekly/manual
+```
+
+`milestone2-closure-status.json` now has explicit closure fields:
+
+- `ci_closure_ready`
+- `release_closure_ready`
+- `overall_closure_ready`
+- `remaining_to_target`
+- `recent_failure_reasons`
+
+### 中文
+
+nightly 校准汇总新增两个稳定产物，用于“保守建议 + 人工评审”闭环：
+
+- `threshold-change-proposal.md`
+- `closure-weekly-report.md`
+
+脚本入口如下：
+
+```bash
+bash ./scripts/public-api-threshold-change-proposal.sh \
+  --report ./target/public-api-calibration/manual/calibration-report.json \
+  --output-dir ./target/public-api-threshold-proposal/manual
+```
+
+```bash
+bash ./scripts/public-api-closure-weekly-report.sh \
+  --calibration-report ./target/public-api-calibration/manual/calibration-report.json \
+  --ci-streak ./target/public-api-streak/ci/streak-report.json \
+  --release-streak ./target/public-api-streak/release/streak-report.json \
+  --closure-status ./target/public-api-milestone2-closure/manual/milestone2-closure-status.json \
+  --window 10 \
+  --output-dir ./target/public-api-closure-weekly/manual
+```
+
+`milestone2-closure-status.json` 现已补齐显式收口字段：
+
+- `ci_closure_ready`
+- `release_closure_ready`
+- `overall_closure_ready`
+- `remaining_to_target`
+- `recent_failure_reasons`
+
 ## English
 
 This document defines the public API gate baseline benchmark contract for Linux `x86_64` and `arm64`.

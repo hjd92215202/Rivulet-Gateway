@@ -1,5 +1,33 @@
 # Production Readiness Report / 生产就绪度报告
 
+## M2 Closure Addendum (G3.4.2) / M2 收口补充（G3.4.2）
+
+### English
+
+This batch keeps `standard` dual-blocking unchanged and extends report-only closure tooling:
+
+- nightly now generates `threshold-change-proposal.md` for architecture-aware `standard` threshold suggestions (manual review only)
+- nightly now generates `closure-weekly-report.md` for M2 closure trend review (observe + CI/release streak synthesis)
+- `milestone2-closure-status.json` now includes:
+  - `ci_closure_ready`
+  - `release_closure_ready`
+  - `overall_closure_ready`
+  - `remaining_to_target`
+  - `recent_failure_reasons`
+
+### 中文
+
+本批保持 `standard` 双阻断不变，并补齐“只报告不自动改值”的收口工具链：
+
+- nightly 新增 `threshold-change-proposal.md`，用于按架构 `standard` 阈值建议（仅人工评审）
+- nightly 新增 `closure-weekly-report.md`，用于 M2 收口趋势周报（observe + CI/release streak 汇总）
+- `milestone2-closure-status.json` 新增稳定字段：
+  - `ci_closure_ready`
+  - `release_closure_ready`
+  - `overall_closure_ready`
+  - `remaining_to_target`
+  - `recent_failure_reasons`
+
 ## English
 
 Report date: April 8, 2026  

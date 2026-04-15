@@ -232,6 +232,12 @@ jobs:
             --report "$RUNNER_TEMP/rivulet-nightly-calibration/calibration-report.json" \
             --output-dir "$RUNNER_TEMP/rivulet-nightly-threshold-pr-checklist"
 
+      - name: Build threshold change proposal
+        run: |
+          bash ./scripts/public-api-threshold-change-proposal.sh \
+            --report "$RUNNER_TEMP/rivulet-nightly-calibration/calibration-report.json" \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-threshold-change-proposal"
+
       - name: Build milestone-2 closure status
         run: |
           bash ./scripts/public-api-milestone2-closure-status.sh \
@@ -239,6 +245,16 @@ jobs:
             --release-streak "$RUNNER_TEMP/rivulet-nightly-streak-release/streak-report.json" \
             --calibration-report "$RUNNER_TEMP/rivulet-nightly-calibration/calibration-report.json" \
             --output-dir "$RUNNER_TEMP/rivulet-nightly-milestone2-closure"
+
+      - name: Build closure weekly report
+        run: |
+          bash ./scripts/public-api-closure-weekly-report.sh \
+            --calibration-report "$RUNNER_TEMP/rivulet-nightly-calibration/calibration-report.json" \
+            --ci-streak "$RUNNER_TEMP/rivulet-nightly-streak-ci/streak-report.json" \
+            --release-streak "$RUNNER_TEMP/rivulet-nightly-streak-release/streak-report.json" \
+            --closure-status "$RUNNER_TEMP/rivulet-nightly-milestone2-closure/milestone2-closure-status.json" \
+            --window 10 \
+            --output-dir "$RUNNER_TEMP/rivulet-nightly-closure-weekly"
 
       - name: Upload calibration and streak reports
         if: always()
@@ -248,7 +264,9 @@ jobs:
           path: |
             ${{ runner.temp }}/rivulet-nightly-calibration
             ${{ runner.temp }}/rivulet-nightly-threshold-pr-checklist
+            ${{ runner.temp }}/rivulet-nightly-threshold-change-proposal
             ${{ runner.temp }}/rivulet-nightly-streak-ci
             ${{ runner.temp }}/rivulet-nightly-streak-release
             ${{ runner.temp }}/rivulet-nightly-milestone2-closure
+            ${{ runner.temp }}/rivulet-nightly-closure-weekly
           if-no-files-found: ignore
