@@ -124,14 +124,18 @@ def load_json(path: Path, label: str):
 
 def parse_streak(payload: dict, workflow_name: str):
     consecutive = int(payload.get("consecutive_dual_arch_success", 0))
+    consecutive_failures = int(payload.get("consecutive_eligible_failures", 0))
     target = int(payload.get("closure_target", 10))
     remaining = int(payload.get("remaining_to_target", max(0, target - consecutive)))
     ready = bool(payload.get("closure_ready", consecutive >= target))
+    rollback_recommended = bool(payload.get("rollback_recommended", consecutive_failures >= 2))
     return {
         "workflow": workflow_name,
         "closure_target": target,
         "consecutive_dual_arch_success": consecutive,
+        "consecutive_eligible_failures": consecutive_failures,
         "closure_ready": ready,
+        "rollback_recommended": rollback_recommended,
         "remaining_to_target": remaining,
         "inspected_runs": int(payload.get("inspected_runs", 0)),
         "eligible_runs": int(payload.get("eligible_runs", 0)),
@@ -210,6 +214,7 @@ for arch, current in recommended_thresholds.items():
 ci_closure_ready = ci_block["closure_ready"]
 release_closure_ready = release_block["closure_ready"]
 overall_ready = ci_closure_ready and release_closure_ready
+rollback_recommended = bool(ci_block["rollback_recommended"] or release_block["rollback_recommended"])
 remaining = max(ci_block["remaining_to_target"], release_block["remaining_to_target"])
 recent_failure_reasons = aggregate_failure_reasons(ci_block) + aggregate_failure_reasons(release_block)
 recent_ineligible_reasons = aggregate_ineligible_reasons(ci_block) + aggregate_ineligible_reasons(release_block)
@@ -221,6 +226,7 @@ status = {
     "release": release_block,
     "ci_closure_ready": ci_closure_ready,
     "release_closure_ready": release_closure_ready,
+    "rollback_recommended": rollback_recommended,
     "calibration": {
         "profile": calibration_payload.get("profile", "unknown"),
         "generated_at": calibration_payload.get("generated_at"),
@@ -250,15 +256,16 @@ lines = [
     f"- ci_closure_ready: `{status['ci_closure_ready']}`",
     f"- release_closure_ready: `{status['release_closure_ready']}`",
     f"- overall_closure_ready: `{status['overall_closure_ready']}`",
+    f"- rollback_recommended: `{status['rollback_recommended']}`",
     f"- remaining_to_target: `{status['remaining_to_target']}`",
     f"- next_action: `{status['next_action']}`",
     "",
     "## Streak Details / 连绿详情",
     "",
-    "| workflow | closure_ready | consecutive_dual_arch_success | closure_target | remaining_to_target | eligible_runs | ineligible_runs | inspected_runs |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-    f"| ci | {ci_block['closure_ready']} | {ci_block['consecutive_dual_arch_success']} | {ci_block['closure_target']} | {ci_block['remaining_to_target']} | {ci_block['eligible_runs']} | {ci_block['ineligible_runs']} | {ci_block['inspected_runs']} |",
-    f"| release | {release_block['closure_ready']} | {release_block['consecutive_dual_arch_success']} | {release_block['closure_target']} | {release_block['remaining_to_target']} | {release_block['eligible_runs']} | {release_block['ineligible_runs']} | {release_block['inspected_runs']} |",
+    "| workflow | closure_ready | rollback_recommended | consecutive_dual_arch_success | consecutive_eligible_failures | closure_target | remaining_to_target | eligible_runs | ineligible_runs | inspected_runs |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    f"| ci | {ci_block['closure_ready']} | {ci_block['rollback_recommended']} | {ci_block['consecutive_dual_arch_success']} | {ci_block['consecutive_eligible_failures']} | {ci_block['closure_target']} | {ci_block['remaining_to_target']} | {ci_block['eligible_runs']} | {ci_block['ineligible_runs']} | {ci_block['inspected_runs']} |",
+    f"| release | {release_block['closure_ready']} | {release_block['rollback_recommended']} | {release_block['consecutive_dual_arch_success']} | {release_block['consecutive_eligible_failures']} | {release_block['closure_target']} | {release_block['remaining_to_target']} | {release_block['eligible_runs']} | {release_block['ineligible_runs']} | {release_block['inspected_runs']} |",
     "",
     "## Calibration Snapshot / 校准快照",
     "",

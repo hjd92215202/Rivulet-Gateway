@@ -74,6 +74,7 @@ flowchart TD
   - threshold change proposal (`threshold-change-proposal.md`)
   - milestone-2 closure synthesis (`milestone2-closure-status.json/.md`)
   - closure weekly report (`closure-weekly-report.md`)
+  - sampling metadata (`sampling-metadata.json`) for manual cadence traceability
 - Gate jobs now run with explicit timeout and long-run evaluate windows.
 - `script-standards` now includes fixture backend SIGTERM termination regression check.
 - `script-standards` now also enforces `print_stage` -> `stderr` log channel contract.
@@ -109,6 +110,13 @@ Nightly calibration summary uploads:
 - `closure-weekly-report.md`
 
 These artifacts support manual threshold tuning and milestone-2 closure tracking (10 consecutive dual-arch green runs in both CI and release).
+
+Nightly dispatch metadata:
+
+- `workflow_dispatch` now accepts:
+  - `sampling_label` (free text)
+  - `sampling_slot` (`manual|am-1030|pm-2030`)
+- summary job persists metadata as artifact so M2 closure sprint can distinguish scheduled runs from manual补采样 runs.
 
 G3.4.1 说明（中文）:
 
@@ -157,6 +165,7 @@ G3.4.1 说明（中文）:
 - `script-standards` 新增 `print_stage` 必须写 `stderr` 的通道约束。
 - `script-standards` 在阈值键变更时新增证据成熟声明约束（PR 必须包含 `ready_for_threshold_pr=true`）。
 - `systemd-lifecycle-linux-x86_64` 与 `systemd-lifecycle-linux-arm64` 已增加 workflow 级超时保护。
+- nightly 的 `workflow_dispatch` 已新增 `sampling_label` 与 `sampling_slot` 输入，用于 M2 收口补采样标记。
 
 ### 审计产物
 
@@ -180,6 +189,7 @@ nightly 校准汇总 job 固定上传：
 - `calibration-report.md`
 - `streak-report.json`
 - `streak-report.md`
+- `sampling-metadata.json`
 
 产物用于“先报告后调阈值”的校准闭环和“连续 10 次双架构全绿”收口跟踪。
 

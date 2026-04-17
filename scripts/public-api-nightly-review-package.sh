@@ -179,6 +179,7 @@ release_eligible = int(release_streak.get("eligible_runs", 0))
 release_ineligible = int(release_streak.get("ineligible_runs", 0))
 
 ineligible_reasons = closure.get("recent_ineligible_reasons", [])
+rollback_recommended = bool(closure.get("rollback_recommended", False))
 
 lines = [
     "# M2 Nightly Review Package / M2 夜间审阅包",
@@ -192,6 +193,7 @@ lines = [
     f"- release_closure_ready: `{closure.get('release_closure_ready', False)}`",
     f"- overall_closure_ready: `{closure.get('overall_closure_ready', False)}`",
     f"- remaining_to_target: `{closure.get('remaining_to_target', 0)}`",
+    f"- rollback_recommended: `{rollback_recommended}`",
     f"- ready_for_threshold_pr: `{str(ready_for_threshold_pr).lower()}`",
     "",
     "## Streak Sample Quality / 连绿样本质量",
@@ -231,6 +233,8 @@ lines.extend(
         "- 若 `ready_for_threshold_pr` 为 false，禁止发起阈值 PR，仅继续 observe 采样。",
         "- If threshold PR is opened, scope must be only `PUBLIC_API_STANDARD_<ARCH>_*` and single-step <=10%.",
         "- 若发起阈值 PR，范围必须仅限 `PUBLIC_API_STANDARD_<ARCH>_*` 且单步变更 <=10%。",
+        "- If `rollback_recommended` is true, rollback latest threshold PR first and pause new threshold changes.",
+        "- 若 `rollback_recommended` 为 true，先回滚最近阈值 PR，再暂停新的阈值调整。",
         "",
         "## Evidence Pointers / 证据入口",
         "",

@@ -76,6 +76,11 @@ During M2 closure sprint, operate nightly outputs with one fixed routine:
 7. Distinguish diagnostics in closure artifacts:
    - `recent_failure_reasons` is gate-failure-only (eligible runs)
    - `recent_ineligible_reasons` is skip/missing noise aggregation
+8. Use manual nightly cadence during M2 closure sprint:
+   - keep scheduled nightly
+   - add two manual runs daily (`workflow_dispatch`) around BJT 10:30 and 20:30
+   - record dispatch slot/label in nightly metadata artifact for review traceability
+9. If closure artifacts report `rollback_recommended=true`, rollback the latest threshold PR immediately before opening any new threshold PR.
 
 ### Local Pre-Release Validation
 
@@ -241,3 +246,8 @@ cargo test --workspace
 7. 收口诊断字段必须分离解读：
    - `recent_failure_reasons` 仅统计有效样本中的真实 gate 失败；
    - `recent_ineligible_reasons` 单独统计 skip/missing 噪声原因。
+8. M2 收口冲刺执行“定时 + 手动补采样”节奏：
+   - 保留定时 nightly；
+   - 每日增加两次 `workflow_dispatch`（建议北京时间 10:30、20:30）；
+   - 在 nightly 元数据产物中记录补采样 slot/label，便于审阅追踪。
+9. 若收口产物出现 `rollback_recommended=true`，必须先回滚最近阈值 PR，再考虑新的阈值调整。

@@ -139,11 +139,25 @@ def load_json(path: Path, label: str):
 
 
 def run_success_rate(runs, size):
-    selected = runs[:size]
+    eligible = [item for item in runs if bool(item.get("eligible_for_streak", False))]
+    selected = eligible[:size]
     if not selected:
         return 0.0, 0, 0
     success = sum(1 for item in selected if bool(item.get("dual_arch_success", False)))
     return (success / len(selected)) * 100.0, success, len(selected)
+
+
+def longest_eligible_failure_streak(runs, size):
+    streak = 0
+    for item in runs:
+        if not bool(item.get("eligible_for_streak", False)):
+            continue
+        if bool(item.get("dual_arch_success", False)):
+            break
+        streak += 1
+        if streak >= size:
+            break
+    return streak
 
 
 def evidence_maturity(analysis, size):
@@ -188,6 +202,9 @@ release_runs = release_streak.get("runs", [])
 
 ci_rate, ci_success, ci_total = run_success_rate(ci_runs, window)
 release_rate, release_success, release_total = run_success_rate(release_runs, window)
+ci_failure_streak = longest_eligible_failure_streak(ci_runs, window)
+release_failure_streak = longest_eligible_failure_streak(release_runs, window)
+rollback_recommended = bool(closure_status.get("rollback_recommended", False))
 
 ready_for_threshold_pr, maturity_reasons = evidence_maturity(analysis, window)
 recent_failure_reasons = closure_status.get("recent_failure_reasons", [])
@@ -206,11 +223,14 @@ lines = [
     f"- release_closure_ready: `{closure_status.get('release_closure_ready', False)}`",
     f"- overall_closure_ready: `{closure_status.get('overall_closure_ready', False)}`",
     f"- remaining_to_target: `{closure_status.get('remaining_to_target', 0)}`",
+    f"- rollback_recommended: `{rollback_recommended}`",
     "",
     "## Recent Gate Trend / 最近 Gate 趋势",
     "",
     f"- CI dual-arch success (last {ci_total}): `{ci_success}/{ci_total}` (`{ci_rate:.2f}%`)",
     f"- Release dual-arch success (last {release_total}): `{release_success}/{release_total}` (`{release_rate:.2f}%`)",
+    f"- CI consecutive eligible failures: `{ci_failure_streak}`",
+    f"- Release consecutive eligible failures: `{release_failure_streak}`",
     "",
 ]
 
@@ -261,6 +281,8 @@ if closure_status.get("overall_closure_ready", False):
     lines.append("- Milestone 2 closure target is met; switch mainline to Milestone 3 hardening batch.")
 else:
     lines.append("- Continue nightly observe sampling and keep CI/release standard dual-blocking unchanged.")
+if rollback_recommended:
+    lines.append("- Trigger threshold rollback path now (eligible run failure streak reached rollback condition).")
 if ready_for_threshold_pr:
     lines.append("- Evidence is mature enough to open a human-reviewed threshold adjustment PR (if needed).")
 else:

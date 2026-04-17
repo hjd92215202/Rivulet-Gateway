@@ -282,9 +282,14 @@ if not runs:
 
 inspected = []
 streak = 0
+consecutive_eligible_failures = 0
 eligible_runs = 0
 ineligible_runs = 0
 skip_reason_counts = {}
+failure_signal_runs = []
+
+success_streak_done = False
+failure_streak_done = False
 
 for run in runs:
     item = evaluate_run(run)
@@ -297,13 +302,34 @@ for run in runs:
         continue
 
     eligible_runs += 1
-    if item["dual_arch_success"]:
-        streak += 1
-        if eligible_runs >= window:
-            break
-        continue
+    is_success = bool(item["dual_arch_success"])
 
-    break
+    if not success_streak_done:
+        if is_success:
+            streak += 1
+            if streak >= window:
+                success_streak_done = True
+        else:
+            success_streak_done = True
+
+    if not failure_streak_done:
+        if is_success:
+            failure_streak_done = True
+        else:
+            consecutive_eligible_failures += 1
+            failure_signal_runs.append(
+                {
+                    "run_id": item["run_id"],
+                    "run_number": item.get("run_number"),
+                    "conclusion": item.get("conclusion"),
+                    "html_url": item.get("html_url"),
+                }
+            )
+
+    if eligible_runs >= window and success_streak_done and (failure_streak_done or consecutive_eligible_failures >= 2):
+        break
+
+rollback_recommended = consecutive_eligible_failures >= 2
 
 report = {
     "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -320,10 +346,13 @@ report = {
         for reason, count in sorted(skip_reason_counts.items(), key=lambda item: (-item[1], item[0]))
     ],
     "consecutive_dual_arch_success": streak,
+    "consecutive_eligible_failures": consecutive_eligible_failures,
+    "rollback_recommended": rollback_recommended,
     "closure_ready": streak >= 10,
     "remaining_to_target": max(0, 10 - streak),
     "target_reached": streak >= 10,
     "required_jobs": required_jobs,
+    "failure_signal_runs": failure_signal_runs,
     "runs": inspected,
 }
 
@@ -349,6 +378,8 @@ with open(summary_path, "w", encoding="utf-8") as fp:
     fp.write(f"- ineligible_runs: `{ineligible_runs}`\n")
     fp.write(f"- eligible_window_satisfied: `{report['eligible_window_satisfied']}`\n")
     fp.write(f"- eligible_runs_missing: `{report['eligible_runs_missing']}`\n")
+    fp.write(f"- consecutive_eligible_failures: `{consecutive_eligible_failures}`\n")
+    fp.write(f"- rollback_recommended: `{rollback_recommended}`\n")
     fp.write(f"- closure_ready: `{streak >= 10}`\n")
     fp.write(f"- remaining_to_target: `{max(0, 10 - streak)}`\n")
     fp.write(f"- target_reached: `{streak >= 10}`\n\n")

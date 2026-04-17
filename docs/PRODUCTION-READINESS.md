@@ -216,6 +216,36 @@ The main progress of this batch:
   - 不降低 CI/release 阻断强度；
   - 不改变网关对外协议面。
 
+### G3.4.5 M2 closure sprint execution hardening (manual cadence + rollback signal)
+
+- nightly workflow_dispatch now supports sampling metadata inputs for manual closure cadence:
+  - `sampling_label`
+  - `sampling_slot` (`manual|am-1030|pm-2030`)
+- nightly summary uploads `sampling-metadata.json` to make manual dispatch traceable in evidence review.
+- streak report now adds rollback signal fields:
+  - `consecutive_eligible_failures`
+  - `rollback_recommended`
+- closure synthesis and cutover checks now surface rollback recommendation explicitly.
+- weekly report and nightly review package now include rollback signal to prevent delayed threshold rollback decisions.
+- this batch still keeps:
+  - `standard` blocking unchanged
+  - no protocol expansion
+
+### G3.4.5 收口冲刺执行加固（手动节奏 + 回滚信号）
+
+- nightly 的 `workflow_dispatch` 新增手动采样元数据输入：
+  - `sampling_label`
+  - `sampling_slot`（`manual|am-1030|pm-2030`）
+- nightly 汇总新增 `sampling-metadata.json` 产物，用于补采样审阅追踪。
+- streak 报告新增阈值回滚信号字段：
+  - `consecutive_eligible_failures`
+  - `rollback_recommended`
+- 收口汇总与切线检查已显式透出回滚建议，避免回滚动作滞后。
+- 周报与 nightly 审阅包已联动展示回滚信号，便于执行“先回滚、后继续阈值调优”。
+- 本批继续保持：
+  - `standard` 阻断口径不降级；
+  - 不扩协议面。
+
 ### CI hang troubleshooting checklist
 
 1. check fixture backend shutdown signal path and confirm SIGTERM exits within bounded time

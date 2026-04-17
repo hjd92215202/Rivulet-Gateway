@@ -103,6 +103,7 @@ release_ready = bool(closure.get("release_closure_ready", False))
 overall_ready = bool(closure.get("overall_closure_ready", False))
 remaining = int(closure.get("remaining_to_target", 0))
 ineligible_reasons = closure.get("recent_ineligible_reasons", [])
+rollback_recommended = bool(closure.get("rollback_recommended", False))
 
 cutover_ready = ci_ready and release_ready and overall_ready
 next_action = (
@@ -120,6 +121,7 @@ payload = {
     "remaining_to_target": remaining,
     "cutover_ready": cutover_ready,
     "ineligible_noise_count": len(ineligible_reasons),
+    "rollback_recommended": rollback_recommended,
     "next_action": next_action,
 }
 result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -136,6 +138,7 @@ lines = [
     f"- remaining_to_target: `{remaining}`",
     f"- cutover_ready: `{cutover_ready}`",
     f"- ineligible_noise_count: `{payload['ineligible_noise_count']}`",
+    f"- rollback_recommended: `{payload['rollback_recommended']}`",
     f"- next_action: `{next_action}`",
     "",
     "## Cutover Rule / 切线规则",

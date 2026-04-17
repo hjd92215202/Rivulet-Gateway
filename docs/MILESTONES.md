@@ -101,6 +101,12 @@ Newly closed in G3.4.4 (streak semantics reliability fix):
 - closure synthesis now separates `recent_failure_reasons` and `recent_ineligible_reasons` to prevent noise misclassification
 - nightly review package now includes streak sample-quality summary for CI/release audit
 
+Newly closed in G3.4.5 (closure sprint execution hardening):
+
+- nightly `workflow_dispatch` now supports manual sampling metadata (`sampling_label` + `sampling_slot`) for M2 sprint traceability
+- streak report now emits rollback signal (`consecutive_eligible_failures`, `rollback_recommended`) based on eligible runs only
+- closure synthesis / weekly report / review package / cutover check now surface rollback recommendation consistently
+
 G3.4.2 新增收口（执行加固）：
 
 - nightly 汇总新增 `threshold-change-proposal.md`，用于按架构 `standard` 阈值建议包
@@ -120,6 +126,12 @@ G3.4.4 新增收口（连绿统计语义修复）：
 - streak 产物新增样本质量字段（`eligible_runs`、`ineligible_runs`、`skip_reasons`，以及逐 run 的 `eligible_for_streak`、`streak_impact`）
 - 收口状态聚合拆分 `recent_failure_reasons` 与 `recent_ineligible_reasons`，避免噪声混入真实 gate 回归结论
 - nightly 审阅包新增 streak 样本质量摘要，便于 CI/release 审计
+
+G3.4.5 新增收口（冲刺执行加固）：
+
+- nightly `workflow_dispatch` 新增手动补采样元数据（`sampling_label` + `sampling_slot`），用于 M2 冲刺审计追踪
+- streak 报告新增基于有效样本的回滚信号（`consecutive_eligible_failures`、`rollback_recommended`）
+- 收口状态、周报、审阅包与切线检查已统一透出回滚建议，支持“出现连续回归即回滚”执行口径
 
 G3.4.1 新增收口（执行工具链）:
 

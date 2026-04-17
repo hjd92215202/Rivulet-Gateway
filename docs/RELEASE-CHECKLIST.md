@@ -75,6 +75,8 @@ Release target: `v<version>`
 - [ ] If `cutover_ready=true`, M2 completion + M3 kickoff docs update is prepared as isolated commit
 - [ ] Streak evidence confirms `eligible_runs` excludes `skipped/missing` gate jobs (treated as `not_eligible`)
 - [ ] `recent_failure_reasons` and `recent_ineligible_reasons` are reviewed separately before closure decisions
+- [ ] Manual nightly sampling runs are executed and tagged with slot/label metadata (`am-1030` / `pm-2030`)
+- [ ] If `rollback_recommended=true`, latest threshold PR is rolled back before any new threshold tuning PR
 
 ### Recommended Linux Host Validation
 
@@ -158,6 +160,8 @@ Release target: `v<version>`
 - [ ] 若 `cutover_ready=true`，以独立提交完成 M2 完成标记与 M3 启动文档更新
 - [ ] 已确认 streak 的 `eligible_runs` 不包含 `skipped/missing` gate job（按 `not_eligible` 忽略）
 - [ ] 已分别审阅 `recent_failure_reasons` 与 `recent_ineligible_reasons`，避免噪声误判为 gate 回归
+- [ ] 已执行手动 nightly 补采样并记录 slot/label 元数据（`am-1030` / `pm-2030`）
+- [ ] 若 `rollback_recommended=true`，已先回滚最近阈值 PR，再评估新的阈值调整
 
 ### 推荐 Linux 主机验证
 

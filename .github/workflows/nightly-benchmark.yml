@@ -4,6 +4,20 @@ on:
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:
+    inputs:
+      sampling_label:
+        description: "Sampling label for M2 closure sprint (e.g. manual-am-1030/manual-pm-2030)"
+        required: false
+        default: "manual"
+      sampling_slot:
+        description: "Sampling slot marker for operational traceability"
+        required: false
+        type: choice
+        options:
+          - manual
+          - am-1030
+          - pm-2030
+        default: manual
 
 permissions:
   contents: read
@@ -206,6 +220,21 @@ jobs:
             --output-dir "$RUNNER_TEMP/rivulet-nightly-calibration" \
             --inputs "${results[@]}"
 
+      - name: Persist sampling metadata
+        run: |
+          metadata_dir="$RUNNER_TEMP/rivulet-nightly-sampling-metadata"
+          mkdir -p "$metadata_dir"
+          {
+            echo "{"
+            echo "  \"generated_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+            echo "  \"event_name\": \"${{ github.event_name }}\","
+            echo "  \"sampling_label\": \"${{ github.event.inputs.sampling_label || 'schedule' }}\","
+            echo "  \"sampling_slot\": \"${{ github.event.inputs.sampling_slot || 'schedule' }}\","
+            echo "  \"run_id\": \"${{ github.run_id }}\","
+            echo "  \"run_attempt\": \"${{ github.run_attempt }}\""
+            echo "}"
+          } > "$metadata_dir/sampling-metadata.json"
+
       - name: Build CI streak report
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -289,4 +318,5 @@ jobs:
             ${{ runner.temp }}/rivulet-nightly-closure-weekly
             ${{ runner.temp }}/rivulet-nightly-review-package
             ${{ runner.temp }}/rivulet-nightly-cutover-check
+            ${{ runner.temp }}/rivulet-nightly-sampling-metadata
           if-no-files-found: ignore
