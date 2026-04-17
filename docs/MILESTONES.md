@@ -94,6 +94,13 @@ Newly closed in G3.4.2 (closure execution reinforcement):
 - milestone closure synthesis now aggregates `recent_failure_reasons` from streak run details
 - nightly summary now generates `closure-weekly-report.md` for observe sample trend and closure evidence maturity
 
+Newly closed in G3.4.4 (streak semantics reliability fix):
+
+- streak counting now treats gate `skipped`/`missing` as `not_eligible` and no longer resets valid streak progress
+- streak artifacts now expose eligibility-quality fields (`eligible_runs`, `ineligible_runs`, `skip_reasons`, per-run `eligible_for_streak`, `streak_impact`)
+- closure synthesis now separates `recent_failure_reasons` and `recent_ineligible_reasons` to prevent noise misclassification
+- nightly review package now includes streak sample-quality summary for CI/release audit
+
 G3.4.2 新增收口（执行加固）：
 
 - nightly 汇总新增 `threshold-change-proposal.md`，用于按架构 `standard` 阈值建议包
@@ -106,6 +113,13 @@ G3.4.3 新增收口（冲刺运营闭环）：
 - nightly 汇总新增统一审阅入口 `m2-nightly-review-package.md`（固定证据顺序与决策规则）
 - nightly 汇总新增切线判定产物 `m2-cutover-check.json/.md`（用于 M2->M3 切线门槛）
 - 收口执行口径固化为“先审阅包、后判定、再动作”，避免跨轮次执行漂移
+
+G3.4.4 新增收口（连绿统计语义修复）：
+
+- 连绿统计将 gate `skipped`/`missing` 统一归为 `not_eligible`，不再把无效样本误判为连续失败
+- streak 产物新增样本质量字段（`eligible_runs`、`ineligible_runs`、`skip_reasons`，以及逐 run 的 `eligible_for_streak`、`streak_impact`）
+- 收口状态聚合拆分 `recent_failure_reasons` 与 `recent_ineligible_reasons`，避免噪声混入真实 gate 回归结论
+- nightly 审阅包新增 streak 样本质量摘要，便于 CI/release 审计
 
 G3.4.1 新增收口（执行工具链）:
 

@@ -264,6 +264,8 @@ jobs:
             --threshold-checklist "$RUNNER_TEMP/rivulet-nightly-threshold-pr-checklist/threshold-pr-checklist.md" \
             --closure-weekly "$RUNNER_TEMP/rivulet-nightly-closure-weekly/closure-weekly-report.md" \
             --closure-status "$RUNNER_TEMP/rivulet-nightly-milestone2-closure/milestone2-closure-status.json" \
+            --ci-streak "$RUNNER_TEMP/rivulet-nightly-streak-ci/streak-report.json" \
+            --release-streak "$RUNNER_TEMP/rivulet-nightly-streak-release/streak-report.json" \
             --output-dir "$RUNNER_TEMP/rivulet-nightly-review-package"
 
       - name: Build M2 cutover readiness check

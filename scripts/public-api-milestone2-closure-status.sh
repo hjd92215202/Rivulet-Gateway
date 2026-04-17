@@ -134,6 +134,9 @@ def parse_streak(payload: dict, workflow_name: str):
         "closure_ready": ready,
         "remaining_to_target": remaining,
         "inspected_runs": int(payload.get("inspected_runs", 0)),
+        "eligible_runs": int(payload.get("eligible_runs", 0)),
+        "ineligible_runs": int(payload.get("ineligible_runs", 0)),
+        "skip_reasons": payload.get("skip_reasons", []),
         "generated_at": payload.get("generated_at"),
         "runs": payload.get("runs", []),
     }
@@ -142,29 +145,43 @@ def parse_streak(payload: dict, workflow_name: str):
 def aggregate_failure_reasons(workflow_block: dict):
     counts = {}
     for run in workflow_block.get("runs", []):
-        if run.get("dual_arch_success", False):
+        if not run.get("eligible_for_streak", False):
+            continue
+        if run.get("streak_impact") != "counted_failure":
             continue
 
-        run_reasons = []
         required_jobs = run.get("required_jobs", {})
         for job_name, job_state in required_jobs.items():
             present = bool(job_state.get("present", False))
             conclusion = str(job_state.get("conclusion") or "unknown")
             if not present:
-                run_reasons.append(f"{workflow_block['workflow']}/job_missing/{job_name}")
-            elif conclusion != "success":
-                run_reasons.append(f"{workflow_block['workflow']}/job_failed/{job_name}/{conclusion}")
+                counts[f"{workflow_block['workflow']}/job_missing/{job_name}"] = (
+                    counts.get(f"{workflow_block['workflow']}/job_missing/{job_name}", 0) + 1
+                )
+                continue
+            if conclusion != "success":
+                reason = f"{workflow_block['workflow']}/job_failed/{job_name}/{conclusion}"
+                counts[reason] = counts.get(reason, 0) + 1
 
         run_conclusion = str(run.get("conclusion") or "unknown")
         if run_conclusion != "success":
-            run_reasons.append(f"{workflow_block['workflow']}/run_conclusion/{run_conclusion}")
-
-        if not run_reasons:
-            run_reasons.append(f"{workflow_block['workflow']}/dual_arch_not_success")
-
-        for reason in run_reasons:
+            reason = f"{workflow_block['workflow']}/run_conclusion/{run_conclusion}"
             counts[reason] = counts.get(reason, 0) + 1
 
+    return [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def aggregate_ineligible_reasons(workflow_block: dict):
+    counts = {}
+    for run in workflow_block.get("runs", []):
+        if run.get("eligible_for_streak", True):
+            continue
+        for reason in run.get("skip_reasons", []):
+            full = f"{workflow_block['workflow']}/{reason}"
+            counts[full] = counts.get(full, 0) + 1
     return [
         {"reason": reason, "count": count}
         for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
@@ -195,6 +212,7 @@ release_closure_ready = release_block["closure_ready"]
 overall_ready = ci_closure_ready and release_closure_ready
 remaining = max(ci_block["remaining_to_target"], release_block["remaining_to_target"])
 recent_failure_reasons = aggregate_failure_reasons(ci_block) + aggregate_failure_reasons(release_block)
+recent_ineligible_reasons = aggregate_ineligible_reasons(ci_block) + aggregate_ineligible_reasons(release_block)
 
 status = {
     "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -213,6 +231,7 @@ status = {
     "overall_closure_ready": overall_ready,
     "remaining_to_target": remaining,
     "recent_failure_reasons": recent_failure_reasons,
+    "recent_ineligible_reasons": recent_ineligible_reasons,
     "next_action": (
         "promote Milestone 2 to completed and move roadmap focus to Milestone 3"
         if overall_ready
@@ -236,10 +255,10 @@ lines = [
     "",
     "## Streak Details / 连绿详情",
     "",
-    "| workflow | closure_ready | consecutive_dual_arch_success | closure_target | remaining_to_target | inspected_runs |",
-    "| --- | --- | ---: | ---: | ---: | ---: |",
-    f"| ci | {ci_block['closure_ready']} | {ci_block['consecutive_dual_arch_success']} | {ci_block['closure_target']} | {ci_block['remaining_to_target']} | {ci_block['inspected_runs']} |",
-    f"| release | {release_block['closure_ready']} | {release_block['consecutive_dual_arch_success']} | {release_block['closure_target']} | {release_block['remaining_to_target']} | {release_block['inspected_runs']} |",
+    "| workflow | closure_ready | consecutive_dual_arch_success | closure_target | remaining_to_target | eligible_runs | ineligible_runs | inspected_runs |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    f"| ci | {ci_block['closure_ready']} | {ci_block['consecutive_dual_arch_success']} | {ci_block['closure_target']} | {ci_block['remaining_to_target']} | {ci_block['eligible_runs']} | {ci_block['ineligible_runs']} | {ci_block['inspected_runs']} |",
+    f"| release | {release_block['closure_ready']} | {release_block['consecutive_dual_arch_success']} | {release_block['closure_target']} | {release_block['remaining_to_target']} | {release_block['eligible_runs']} | {release_block['ineligible_runs']} | {release_block['inspected_runs']} |",
     "",
     "## Calibration Snapshot / 校准快照",
     "",
@@ -259,7 +278,7 @@ else:
     lines.append("- no immediate manual review items")
 
 lines.append("")
-lines.append("## Recent Failure Reasons / 最近失败原因聚合")
+lines.append("## Recent Failure Reasons (Eligible Runs Only) / 最近失败原因（仅有效样本）")
 lines.append("")
 if recent_failure_reasons:
     lines.append("| reason | count |")
@@ -267,7 +286,18 @@ if recent_failure_reasons:
     for item in recent_failure_reasons:
         lines.append(f"| `{item['reason']}` | {item['count']} |")
 else:
-    lines.append("- no recent failure reasons were observed in inspected streak runs")
+    lines.append("- no eligible gate failure reasons were observed")
+
+lines.append("")
+lines.append("## Recent Ineligible Reasons / 最近无效样本原因")
+lines.append("")
+if recent_ineligible_reasons:
+    lines.append("| reason | count |")
+    lines.append("| --- | ---: |")
+    for item in recent_ineligible_reasons:
+        lines.append(f"| `{item['reason']}` | {item['count']} |")
+else:
+    lines.append("- no ineligible reasons were observed")
 
 lines.append("")
 summary_path.write_text("\n".join(lines), encoding="utf-8")

@@ -102,6 +102,7 @@ ci_ready = bool(closure.get("ci_closure_ready", False))
 release_ready = bool(closure.get("release_closure_ready", False))
 overall_ready = bool(closure.get("overall_closure_ready", False))
 remaining = int(closure.get("remaining_to_target", 0))
+ineligible_reasons = closure.get("recent_ineligible_reasons", [])
 
 cutover_ready = ci_ready and release_ready and overall_ready
 next_action = (
@@ -118,6 +119,7 @@ payload = {
     "overall_closure_ready": overall_ready,
     "remaining_to_target": remaining,
     "cutover_ready": cutover_ready,
+    "ineligible_noise_count": len(ineligible_reasons),
     "next_action": next_action,
 }
 result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -133,13 +135,25 @@ lines = [
     f"- overall_closure_ready: `{overall_ready}`",
     f"- remaining_to_target: `{remaining}`",
     f"- cutover_ready: `{cutover_ready}`",
+    f"- ineligible_noise_count: `{payload['ineligible_noise_count']}`",
     f"- next_action: `{next_action}`",
     "",
     "## Cutover Rule / 切线规则",
     "",
     "- Only when CI + release are both dual-arch 10-green ready can M2 be marked completed.",
     "- 仅当 CI 与 release 双链路均达到双架构 10 连绿，才允许将 M2 标记为 completed。",
+    "",
 ]
+
+if ineligible_reasons:
+    lines.append("## Ineligible Noise Note / 无效样本噪声说明")
+    lines.append("")
+    lines.append("| reason | count |")
+    lines.append("| --- | ---: |")
+    for item in ineligible_reasons:
+        lines.append(f"| `{item.get('reason', 'unknown')}` | {item.get('count', 0)} |")
+    lines.append("")
+
 summary_path.write_text("\n".join(lines), encoding="utf-8")
 PY
 

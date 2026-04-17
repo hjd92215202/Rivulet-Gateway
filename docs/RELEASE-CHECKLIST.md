@@ -73,6 +73,8 @@ Release target: `v<version>`
 - [ ] `m2-cutover-check.json` is reviewed as final closure gate
 - [ ] If `cutover_ready=false`, no M2->M3 docs cutover is attempted
 - [ ] If `cutover_ready=true`, M2 completion + M3 kickoff docs update is prepared as isolated commit
+- [ ] Streak evidence confirms `eligible_runs` excludes `skipped/missing` gate jobs (treated as `not_eligible`)
+- [ ] `recent_failure_reasons` and `recent_ineligible_reasons` are reviewed separately before closure decisions
 
 ### Recommended Linux Host Validation
 
@@ -154,6 +156,8 @@ Release target: `v<version>`
 - [ ] `m2-cutover-check.json` 已作为收口最终门槛审阅
 - [ ] 若 `cutover_ready=false`，不执行 M2->M3 文档切线
 - [ ] 若 `cutover_ready=true`，以独立提交完成 M2 完成标记与 M3 启动文档更新
+- [ ] 已确认 streak 的 `eligible_runs` 不包含 `skipped/missing` gate job（按 `not_eligible` 忽略）
+- [ ] 已分别审阅 `recent_failure_reasons` 与 `recent_ineligible_reasons`，避免噪声误判为 gate 回归
 
 ### 推荐 Linux 主机验证
 

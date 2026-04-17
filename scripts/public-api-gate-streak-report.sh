@@ -22,7 +22,7 @@ Compute consecutive dual-architecture public-api gate pass streak from GitHub Ac
 Options:
   --repo <owner/name>                 default: hjd92215202/Rivulet-Gateway
   --workflow <ci|release>             required
-  --window <N>                        number of latest runs to inspect, default: 40
+  --window <N>                        eligible sample window, default: 40
   --output-dir <path>                 default: ./target/public-api-streak/<timestamp>-<workflow>
   --token <github-token>              optional, defaults to GH_TOKEN or GITHUB_TOKEN
   -h, --help
@@ -129,6 +129,9 @@ required_jobs = {
     "release": ["Release Public API Gate Linux x86_64", "Release Public API Gate Linux arm64"],
 }[workflow]
 
+terminal_failures = {"failure", "cancelled", "timed_out", "action_required"}
+max_fetch_runs = max(window * 12, 120)
+
 
 def api_get(url: str) -> dict:
     request = urllib.request.Request(
@@ -154,11 +157,27 @@ def api_get(url: str) -> dict:
 
 
 def fetch_runs(max_items: int):
-    # 中文注释：只看 completed run，避免把 in_progress 噪声当成 streak 中断。
-    query = urllib.parse.urlencode({"status": "completed", "per_page": min(100, max_items)})
-    url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}/runs?{query}"
-    payload = api_get(url)
-    return payload.get("workflow_runs", [])[:max_items]
+    runs = []
+    page = 1
+    per_page = 100
+    while len(runs) < max_items:
+        query = urllib.parse.urlencode(
+            {
+                "status": "completed",
+                "per_page": per_page,
+                "page": page,
+            }
+        )
+        url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_file}/runs?{query}"
+        payload = api_get(url)
+        page_runs = payload.get("workflow_runs", [])
+        if not page_runs:
+            break
+        runs.extend(page_runs)
+        if len(page_runs) < per_page:
+            break
+        page += 1
+    return runs[:max_items]
 
 
 def fetch_jobs(run_id: int):
@@ -168,7 +187,67 @@ def fetch_jobs(run_id: int):
     return payload.get("jobs", [])
 
 
-runs = fetch_runs(window)
+def evaluate_run(run: dict):
+    run_id = int(run["id"])
+    run_conclusion = str(run.get("conclusion") or "")
+    jobs = fetch_jobs(run_id)
+    job_map = {job.get("name", ""): job for job in jobs}
+    required = {}
+    missing_jobs = []
+    local_skip_reasons = []
+    dual_pass = True
+    eligible_for_streak = True
+    streak_impact = "counted_success"
+
+    for job_name in required_jobs:
+        job = job_map.get(job_name)
+        if job is None:
+            required[job_name] = {"present": False, "conclusion": "missing"}
+            missing_jobs.append(job_name)
+            dual_pass = False
+            eligible_for_streak = False
+            local_skip_reasons.append(f"job_missing/{job_name}")
+            continue
+
+        conclusion = str(job.get("conclusion") or "")
+        required[job_name] = {"present": True, "conclusion": conclusion}
+        if conclusion == "success":
+            continue
+        dual_pass = False
+        if conclusion == "skipped":
+            eligible_for_streak = False
+            local_skip_reasons.append(f"job_skipped/{job_name}")
+        else:
+            streak_impact = "counted_failure"
+            local_skip_reasons.append(f"job_failed/{job_name}/{conclusion or 'unknown'}")
+
+    if eligible_for_streak and not dual_pass:
+        if run_conclusion not in terminal_failures and streak_impact != "counted_failure":
+            eligible_for_streak = False
+            streak_impact = "ignored_not_eligible"
+            local_skip_reasons.append(f"run_not_terminal/{run_conclusion or 'unknown'}")
+        else:
+            streak_impact = "counted_failure"
+    elif not eligible_for_streak:
+        streak_impact = "ignored_not_eligible"
+
+    return {
+        "run_id": run_id,
+        "run_number": run.get("run_number"),
+        "status": run.get("status"),
+        "conclusion": run_conclusion,
+        "created_at": run.get("created_at"),
+        "html_url": run.get("html_url"),
+        "required_jobs": required,
+        "missing_jobs": missing_jobs,
+        "dual_arch_success": dual_pass,
+        "eligible_for_streak": eligible_for_streak,
+        "streak_impact": streak_impact,
+        "skip_reasons": local_skip_reasons,
+    }
+
+
+runs = fetch_runs(max_fetch_runs)
 if not runs:
     closure_target = 10
     report = {
@@ -179,6 +258,9 @@ if not runs:
         "window": window,
         "closure_target": closure_target,
         "inspected_runs": 0,
+        "eligible_runs": 0,
+        "ineligible_runs": 0,
+        "skip_reasons": [],
         "consecutive_dual_arch_success": 0,
         "closure_ready": False,
         "remaining_to_target": closure_target,
@@ -200,43 +282,28 @@ if not runs:
 
 inspected = []
 streak = 0
+eligible_runs = 0
+ineligible_runs = 0
+skip_reason_counts = {}
+
 for run in runs:
-    run_id = int(run["id"])
-    jobs = fetch_jobs(run_id)
-    job_map = {job.get("name", ""): job for job in jobs}
-    required = {}
-    dual_pass = True
-    missing_jobs = []
-    for job_name in required_jobs:
-        job = job_map.get(job_name)
-        if job is None:
-            missing_jobs.append(job_name)
-            required[job_name] = {"present": False, "conclusion": "missing"}
-            dual_pass = False
-            continue
-        conclusion = str(job.get("conclusion") or "")
-        required[job_name] = {"present": True, "conclusion": conclusion}
-        if conclusion != "success":
-            dual_pass = False
+    item = evaluate_run(run)
+    inspected.append(item)
 
-    inspected.append(
-        {
-            "run_id": run_id,
-            "run_number": run.get("run_number"),
-            "status": run.get("status"),
-            "conclusion": run.get("conclusion"),
-            "created_at": run.get("created_at"),
-            "html_url": run.get("html_url"),
-            "required_jobs": required,
-            "missing_jobs": missing_jobs,
-            "dual_arch_success": dual_pass,
-        }
-    )
+    if not item["eligible_for_streak"]:
+        ineligible_runs += 1
+        for reason in item["skip_reasons"]:
+            skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
+        continue
 
-    if dual_pass:
+    eligible_runs += 1
+    if item["dual_arch_success"]:
         streak += 1
-    else:
-        break
+        if eligible_runs >= window:
+            break
+        continue
+
+    break
 
 report = {
     "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -246,6 +313,12 @@ report = {
     "window": window,
     "closure_target": 10,
     "inspected_runs": len(inspected),
+    "eligible_runs": eligible_runs,
+    "ineligible_runs": ineligible_runs,
+    "skip_reasons": [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(skip_reason_counts.items(), key=lambda item: (-item[1], item[0]))
+    ],
     "consecutive_dual_arch_success": streak,
     "closure_ready": streak >= 10,
     "remaining_to_target": max(0, 10 - streak),
@@ -253,6 +326,13 @@ report = {
     "required_jobs": required_jobs,
     "runs": inspected,
 }
+
+if eligible_runs < window:
+    report["eligible_window_satisfied"] = False
+    report["eligible_runs_missing"] = window - eligible_runs
+else:
+    report["eligible_window_satisfied"] = True
+    report["eligible_runs_missing"] = 0
 
 with open(result_path, "w", encoding="utf-8") as fp:
     json.dump(report, fp, ensure_ascii=False, indent=2)
@@ -262,24 +342,35 @@ with open(summary_path, "w", encoding="utf-8") as fp:
     fp.write("## Overview\n\n")
     fp.write(f"- repo: `{repo}`\n")
     fp.write(f"- workflow: `{workflow}`\n")
-    fp.write(f"- window: `{window}`\n")
+    fp.write(f"- eligible_window_target: `{window}`\n")
     fp.write(f"- consecutive_dual_arch_success: `{streak}`\n")
     fp.write("- closure_target: `10`\n")
+    fp.write(f"- eligible_runs: `{eligible_runs}`\n")
+    fp.write(f"- ineligible_runs: `{ineligible_runs}`\n")
+    fp.write(f"- eligible_window_satisfied: `{report['eligible_window_satisfied']}`\n")
+    fp.write(f"- eligible_runs_missing: `{report['eligible_runs_missing']}`\n")
     fp.write(f"- closure_ready: `{streak >= 10}`\n")
     fp.write(f"- remaining_to_target: `{max(0, 10 - streak)}`\n")
     fp.write(f"- target_reached: `{streak >= 10}`\n\n")
+    if skip_reason_counts:
+        fp.write("## Ineligible Reasons\n\n")
+        fp.write("| reason | count |\n")
+        fp.write("| --- | ---: |\n")
+        for reason, count in sorted(skip_reason_counts.items(), key=lambda item: (-item[1], item[0])):
+            fp.write(f"| `{reason}` | {count} |\n")
+        fp.write("\n")
     fp.write("## Required Jobs\n\n")
     for name in required_jobs:
         fp.write(f"- `{name}`\n")
     fp.write("\n## Inspected Runs\n\n")
-    fp.write("| run_number | run_id | created_at | dual_arch_success | ci/release conclusion | url |\n")
-    fp.write("| ---: | ---: | --- | --- | --- | --- |\n")
+    fp.write("| run_number | run_id | created_at | eligible_for_streak | streak_impact | dual_arch_success | ci/release conclusion | url |\n")
+    fp.write("| ---: | ---: | --- | --- | --- | --- | --- | --- |\n")
     for item in inspected:
         fp.write(
-            f"| {item.get('run_number')} | {item['run_id']} | {item.get('created_at')} | {item['dual_arch_success']} | {item.get('conclusion')} | {item.get('html_url')} |\n"
+            f"| {item.get('run_number')} | {item['run_id']} | {item.get('created_at')} | {item['eligible_for_streak']} | {item['streak_impact']} | {item['dual_arch_success']} | {item.get('conclusion')} | {item.get('html_url')} |\n"
         )
     if not inspected:
-        fp.write("| n/a | n/a | n/a | n/a | n/a | n/a |\n")
+        fp.write("| n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |\n")
 
 PY
 

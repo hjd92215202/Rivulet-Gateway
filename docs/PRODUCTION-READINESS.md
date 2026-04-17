@@ -184,6 +184,38 @@ The main progress of this batch:
   - `ready_for_threshold_pr=false` 时禁止阈值 PR；
   - 仅在 `cutover_ready=true` 时执行文档切线。
 
+### G3.4.4 streak eligibility semantics fix (no threshold relaxation)
+
+- streak counting now uses eligible gate runs only:
+  - both required Public API Gate jobs must be present and `success` to count as valid streak samples
+  - `skipped`/`missing` gate jobs are now marked `not_eligible` and no longer reset streak
+- closure synthesis now separates diagnostics:
+  - `recent_failure_reasons` keeps only real gate failures from eligible runs
+  - `recent_ineligible_reasons` tracks skip/missing noise causes for auditability
+- nightly review package now includes streak sample-quality summary:
+  - eligible/ineligible counts for both CI and release
+  - aggregated ineligible reason categories
+- this batch is a statistics-semantics repair only:
+  - no `standard` threshold relaxation
+  - no CI/release blocking policy downgrade
+  - no gateway protocol-surface change
+
+### G3.4.4 收口（连绿统计语义修复，不放宽阈值）
+
+- streak 统计口径改为仅基于有效 gate run：
+  - 仅当两条 required Public API Gate job 均存在且 `success` 才计入连绿样本；
+  - gate job `skipped`/`missing` 统一标记为 `not_eligible`，不再误伤 streak 归零。
+- 收口聚合诊断字段完成分离：
+  - `recent_failure_reasons` 仅保留有效样本中的真实 gate 失败；
+  - `recent_ineligible_reasons` 单独记录 skip/missing 噪声来源，便于审计。
+- nightly 审阅包新增样本质量摘要：
+  - CI/release 的 eligible/ineligible 样本数量；
+  - ineligible 原因聚合。
+- 本批明确属于“统计语义修复”：
+  - 不放宽 `standard` 阈值；
+  - 不降低 CI/release 阻断强度；
+  - 不改变网关对外协议面。
+
 ### CI hang troubleshooting checklist
 
 1. check fixture backend shutdown signal path and confirm SIGTERM exits within bounded time

@@ -70,6 +70,12 @@ During M2 closure sprint, operate nightly outputs with one fixed routine:
 5. Use `m2-cutover-check.json` as final cutover gate:
    - `cutover_ready=true` -> execute M2->M3 docs cutover
    - otherwise continue M2 sampling and review loop
+6. Treat streak eligibility strictly:
+   - only runs with both required Public API Gate jobs present and successful are counted as valid streak samples
+   - runs where gate jobs are `skipped` or `missing` are `not_eligible` noise, not gate regression
+7. Distinguish diagnostics in closure artifacts:
+   - `recent_failure_reasons` is gate-failure-only (eligible runs)
+   - `recent_ineligible_reasons` is skip/missing noise aggregation
 
 ### Local Pre-Release Validation
 
@@ -229,3 +235,9 @@ cargo test --workspace
 5. 以 `m2-cutover-check.json` 作为切线最终门槛：
    - `cutover_ready=true`：执行 M2->M3 文档切线；
    - 否则继续 M2 采样与评审闭环。
+6. 连绿统计口径必须严格按“有效样本”执行：
+   - 仅当两条 required Public API Gate job 均 `present=true` 且 `success` 才计入 streak；
+   - gate job `skipped` 或 `missing` 归类为 `not_eligible` 噪声，不计成功也不计失败。
+7. 收口诊断字段必须分离解读：
+   - `recent_failure_reasons` 仅统计有效样本中的真实 gate 失败；
+   - `recent_ineligible_reasons` 单独统计 skip/missing 噪声原因。
