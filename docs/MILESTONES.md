@@ -107,6 +107,14 @@ Newly closed in G3.4.5 (closure sprint execution hardening):
 - streak report now emits rollback signal (`consecutive_eligible_failures`, `rollback_recommended`) based on eligible runs only
 - closure synthesis / weekly report / review package / cutover check now surface rollback recommendation consistently
 
+Newly closed in G3.4.6 (M2 release sampling acceleration):
+
+- release workflow now supports scheduled M2 sampling runs (`30 2,12 * * *` UTC) without changing standard blocking policy
+- release workflow now supports `run_mode=full|m2-sampling` and `sampling_label` on `workflow_dispatch`
+- `m2-sampling` execution scope is intentionally narrowed to script-standards + Linux packaging + release public-api gates
+- release public-api gate artifacts now include `sampling-metadata.json` for streak/audit traceability
+- nightly closure reports now surface release eligible-run summary fields to track M2 closure velocity directly
+
 G3.4.2 新增收口（执行加固）：
 
 - nightly 汇总新增 `threshold-change-proposal.md`，用于按架构 `standard` 阈值建议包
@@ -143,7 +151,7 @@ G3.4.1 新增收口（执行工具链）:
 Remaining in Milestone 2:
 
 - threshold tuning iteration on stable Linux runners
-- reach closure target: 10 consecutive dual-architecture green runs under current `standard` blocking profile
+- reach closure target: 10 consecutive dual-architecture green runs under current `standard` blocking profile (CI + release eligible runs)
 
 ### Milestone 3: Public Internet scale hardening
 

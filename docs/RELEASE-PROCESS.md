@@ -16,7 +16,20 @@ This document defines the formal release process for `Rivulet Gateway / 溪流�
 - Regular `push` and `pull_request` events run `.github/workflows/ci.yml`.
 - Nightly benchmark collection runs `.github/workflows/nightly-benchmark.yml`.
 - Pushing a tag such as `v0.1.5` runs `.github/workflows/release.yml`.
+- Release workflow now also runs on a schedule (`30 2,12 * * *` UTC) for M2 closure sampling.
+- `workflow_dispatch` release inputs now include:
+  - `run_mode=full|m2-sampling` (default `full`)
+  - `sampling_label` (optional audit label)
+- Run-mode contract:
+  - tag push -> forced `full`
+  - scheduled run -> forced `m2-sampling`
+  - workflow_dispatch -> follows `run_mode` input
 - The release workflow builds Linux x86_64, Linux arm64, and Windows x86_64 artifacts.
+- In `m2-sampling` mode, release runs only:
+  - `script-standards`
+  - Linux package jobs (`x86_64` and `arm64`)
+  - release public-api gate jobs (`x86_64` and `arm64`)
+- In `m2-sampling` mode, Windows/systemd/disposable/publish jobs are intentionally skipped.
 - CI and release workflows both run Linux x86_64 and Linux arm64 systemd lifecycle gates on packaged artifacts.
 - Release workflow now also runs disposable lifecycle gates on Linux x86_64 and Linux arm64:
   - `tar.gz`: `install -> upgrade -> rollback -> uninstall`
@@ -36,6 +49,12 @@ This document defines the formal release process for `Rivulet Gateway / 溪流�
 8. Check that every published release asset has detached signature and certificate pairs (`<asset>.sig` and `<asset>.pem`), and confirm compatibility files `SHA256SUMS.sig` and `SHA256SUMS.pem` are present.
 9. Check that the GitHub Release page contains `zip`, `tar.gz`, `rpm`, `SHA256SUMS.txt`, detached signature/certificate files, and `SBOM.spdx.json`, and that every asset filename matches the tag version.
 10. Record remaining risks and post-release follow-up items in the roadmap.
+
+### M2 Release Sampling Notes
+
+- M2 closure streak counting for release is based on eligible `Release Public API Gate` runs, not on publish execution.
+- Release gate artifacts now include `sampling-metadata.json` (run_mode, event_name, sampling_label, run_id, timestamp, arch).
+- During M2 closure sprint, use scheduled + manual sampling to continuously increase release eligible samples.
 
 ### M2 Threshold Tuning Review Flow
 

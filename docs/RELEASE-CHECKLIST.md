@@ -37,6 +37,15 @@ Release target: `v<version>`
 - [ ] Supply-chain provenance attestation job succeeds
 - [ ] GitHub Release page is created
 
+### M2 Sampling Mode Checks (Release)
+
+- [ ] `release.yml` supports `run_mode=full|m2-sampling`
+- [ ] Scheduled release sampling trigger is enabled (`30 2,12 * * *` UTC)
+- [ ] `m2-sampling` runs only script-standards + Linux package + release public-api gate x86_64/arm64
+- [ ] `m2-sampling` does not execute windows/systemd/disposable/publish jobs
+- [ ] Release public-api gate artifacts include `sampling-metadata.json`
+- [ ] `sampling-metadata.json` contains run_mode/event_name/sampling_label/run_id/arch
+
 ### Release Assets
 
 - [ ] Windows `.zip`
@@ -121,6 +130,15 @@ Release target: `v<version>`
 - [ ] release workflow 上传了 `SBOM.spdx.json`
 - [ ] supply-chain provenance 证明步骤通过
 - [ ] GitHub Release 页面已创建
+
+### M2 采样模式检查（Release）
+
+- [ ] `release.yml` 支持 `run_mode=full|m2-sampling`
+- [ ] 已启用 release 定时采样触发（`30 2,12 * * *` UTC）
+- [ ] `m2-sampling` 仅执行 script-standards + Linux 打包 + release public-api gate x86_64/arm64
+- [ ] `m2-sampling` 不执行 windows/systemd/disposable/publish
+- [ ] release public-api gate 产物包含 `sampling-metadata.json`
+- [ ] `sampling-metadata.json` 包含 run_mode/event_name/sampling_label/run_id/arch 字段
 
 ### 发布产物
 

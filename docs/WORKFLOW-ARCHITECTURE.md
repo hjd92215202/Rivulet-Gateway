@@ -11,7 +11,7 @@ Repository workflows:
 ### Trigger model
 
 - `ci`: branch `push`, `pull_request`, `workflow_dispatch`
-- `release`: tag `v*` push, `workflow_dispatch`
+- `release`: tag `v*` push, schedule, `workflow_dispatch`
 - `nightly-benchmark`: schedule + manual dispatch
 
 ### G3.3 blocking relation
@@ -67,6 +67,11 @@ flowchart TD
 - Both Linux architectures are mandatory.
 - Any public-api gate failure blocks downstream publish chain (`supply-chain` in CI, `publish` in release).
 - Release disposable lifecycle gates (`tar.gz` full + `rpm` install-uninstall) are hard blockers before `publish`.
+- Release now supports M2 sampling mode:
+  - schedule runs are forced into `m2-sampling`
+  - `workflow_dispatch` can select `run_mode=full|m2-sampling`
+  - `m2-sampling` executes only script-standards + Linux package + release public-api gate jobs
+  - publish/windows/systemd/disposable jobs are skipped in `m2-sampling`
 - CI disposable lifecycle contract checks are lightweight pre-gates to catch script-interface drift before release.
 - Nightly now collects observe samples on both Linux architectures and emits calibration/streak reports for threshold tuning.
 - Nightly summary now also emits:
@@ -87,8 +92,10 @@ Public API gate jobs upload:
 
 - `result.json`
 - `summary.md`
+- `sampling-metadata.json` (release public-api gate jobs)
 
 These artifacts include architecture, duration profile, request-floor checks, and explicit failure reasons.
+For release sampling mode, metadata also records `run_mode`, `event_name`, `sampling_label`, and `run_id` for M2 audit traceability.
 
 Release disposable lifecycle jobs upload:
 
@@ -108,6 +115,7 @@ Nightly calibration summary uploads:
 - `milestone2-closure-status.json`
 - `milestone2-closure-status.md`
 - `closure-weekly-report.md`
+- `m2-nightly-review-package.md` (already includes release sample-quality summary)
 
 These artifacts support manual threshold tuning and milestone-2 closure tracking (10 consecutive dual-arch green runs in both CI and release).
 
