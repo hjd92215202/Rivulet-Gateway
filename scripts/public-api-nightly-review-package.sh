@@ -178,6 +178,12 @@ ci_ineligible = int(ci_streak.get("ineligible_runs", 0))
 release_eligible = int(release_streak.get("eligible_runs", 0))
 release_ineligible = int(release_streak.get("ineligible_runs", 0))
 
+latest_release_eligible = None
+for item in release_streak.get("runs", []):
+    if bool(item.get("eligible_for_streak", False)):
+        latest_release_eligible = item
+        break
+
 ineligible_reasons = closure.get("recent_ineligible_reasons", [])
 rollback_recommended = bool(closure.get("rollback_recommended", False))
 
@@ -202,6 +208,8 @@ lines = [
     f"- ci_ignored_ineligible_runs: `{ci_ineligible}`",
     f"- release_eligible_runs: `{release_eligible}`",
     f"- release_ignored_ineligible_runs: `{release_ineligible}`",
+    f"- latest_release_eligible_run_id: `{latest_release_eligible.get('run_id') if latest_release_eligible else 'none'}`",
+    f"- latest_release_eligible_created_at: `{latest_release_eligible.get('created_at') if latest_release_eligible else 'none'}`",
     f"- ineligible_reason_categories: `{len(ineligible_reasons)}`",
     "",
 ]
