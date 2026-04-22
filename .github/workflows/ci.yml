@@ -7,7 +7,22 @@ on:
     tags-ignore:
       - "v*"
   pull_request:
+  schedule:
+    - cron: "30 2,12 * * *"
   workflow_dispatch:
+    inputs:
+      run_mode:
+        description: "CI execution mode"
+        required: false
+        type: choice
+        options:
+          - full
+          - m2-sampling
+        default: full
+      sampling_label:
+        description: "Sampling label for M2 closure tracing"
+        required: false
+        default: manual
 
 permissions:
   contents: read
@@ -18,6 +33,8 @@ env:
   CARGO_TERM_COLOR: always
   GATEWAY_DISABLE_ACCESS_LOG: "1"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RIVULET_CI_RUN_MODE: ${{ github.event_name == 'schedule' && 'm2-sampling' || github.event.inputs.run_mode || 'full' }}
+  RIVULET_CI_SAMPLING_LABEL: ${{ github.event_name == 'schedule' && 'schedule' || github.event.inputs.sampling_label || 'manual' }}
 
 jobs:
   script-standards:
@@ -46,6 +63,7 @@ jobs:
 
   test-linux:
     name: Test Linux x86_64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: ubuntu-24.04
     needs:
       - script-standards
@@ -66,6 +84,7 @@ jobs:
 
   test-windows:
     name: Test Windows x86_64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: windows-2022
     needs:
       - script-standards
@@ -89,6 +108,7 @@ jobs:
 
   test-linux-arm64:
     name: Test Linux arm64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: ubuntu-24.04-arm
     needs:
       - script-standards
@@ -109,6 +129,7 @@ jobs:
 
   disposable-lifecycle-contract-linux-x86_64:
     name: Disposable Lifecycle Contract Linux x86_64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: ubuntu-24.04
     needs:
       - script-standards
@@ -144,6 +165,7 @@ jobs:
 
   disposable-lifecycle-contract-linux-arm64:
     name: Disposable Lifecycle Contract Linux arm64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: ubuntu-24.04-arm
     needs:
       - script-standards
@@ -179,6 +201,7 @@ jobs:
 
   package-linux-x86_64:
     name: Package Linux x86_64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: ubuntu-24.04
     needs:
       - test-linux
@@ -239,6 +262,7 @@ jobs:
 
   package-windows-x86_64:
     name: Package Windows x86_64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: windows-2022
     needs:
       - test-windows
@@ -284,6 +308,7 @@ jobs:
 
   package-linux-arm64:
     name: Package Linux arm64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: ubuntu-24.04-arm
     needs:
       - test-linux-arm64
@@ -342,8 +367,65 @@ jobs:
             dist/rpmbuild/aarch64-unknown-linux-gnu/RPMS/**/*.rpm
           if-no-files-found: error
 
+  package-linux-x86_64-m2:
+    name: Package Linux x86_64 (M2 Sampling)
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'm2-sampling' }}
+    runs-on: ubuntu-24.04
+    needs:
+      - script-standards
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build release binary
+        run: cargo build -p gateway-main --release --target x86_64-unknown-linux-gnu
+
+      - name: Build Linux tarball
+        run: bash ./scripts/package.sh --target x86_64-unknown-linux-gnu --format tar.gz --skip-build
+
+      - name: Upload Linux x86_64 sampling artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-ci-sampling-linux-x86_64
+          path: dist/x86_64-unknown-linux-gnu/*.tar.gz
+          if-no-files-found: error
+
+  package-linux-arm64-m2:
+    name: Package Linux arm64 (M2 Sampling)
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'm2-sampling' }}
+    runs-on: ubuntu-24.04-arm
+    needs:
+      - script-standards
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build release binary
+        run: cargo build -p gateway-main --release --target aarch64-unknown-linux-gnu
+
+      - name: Build Linux arm64 tarball
+        run: bash ./scripts/package.sh --target aarch64-unknown-linux-gnu --format tar.gz --skip-build
+
+      - name: Upload Linux arm64 sampling artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: rivulet-ci-sampling-linux-arm64
+          path: dist/aarch64-unknown-linux-gnu/*.tar.gz
+          if-no-files-found: error
+
   systemd-lifecycle-linux-x86_64:
     name: Systemd Lifecycle Linux x86_64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs:
@@ -406,6 +488,7 @@ jobs:
 
   systemd-lifecycle-linux-arm64:
     name: Systemd Lifecycle Linux arm64
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     needs:
@@ -468,10 +551,12 @@ jobs:
 
   public-api-gate-linux-x86_64:
     name: Public API Gate Linux x86_64
+    if: ${{ always() && (needs.package-linux-x86_64.result == 'success' || needs.package-linux-x86_64-m2.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs:
       - package-linux-x86_64
+      - package-linux-x86_64-m2
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -479,7 +564,7 @@ jobs:
       - name: Download Linux x86_64 artifacts
         uses: actions/download-artifact@v6
         with:
-          name: rivulet-linux-x86_64
+          name: ${{ needs.package-linux-x86_64.result == 'success' && 'rivulet-linux-x86_64' || 'rivulet-ci-sampling-linux-x86_64' }}
           path: ci-public-api-assets/x86_64
 
       - name: Resolve Linux x86_64 tarball
@@ -504,6 +589,23 @@ jobs:
             --backend-port 19584 \
             --output-dir "$RUNNER_TEMP/rivulet-ci-public-api-gate-x86"
 
+      - name: Persist CI gate sampling metadata
+        run: |
+          metadata_dir="$RUNNER_TEMP/rivulet-ci-public-api-gate-x86"
+          mkdir -p "$metadata_dir"
+          {
+            echo "{"
+            echo "  \"generated_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+            echo "  \"workflow\": \"ci\","
+            echo "  \"event_name\": \"${{ github.event_name }}\","
+            echo "  \"run_mode\": \"${{ env.RIVULET_CI_RUN_MODE }}\","
+            echo "  \"sampling_label\": \"${{ env.RIVULET_CI_SAMPLING_LABEL }}\","
+            echo "  \"run_id\": \"${{ github.run_id }}\","
+            echo "  \"run_attempt\": \"${{ github.run_attempt }}\","
+            echo "  \"arch\": \"linux-x86_64\""
+            echo "}"
+          } > "$metadata_dir/sampling-metadata.json"
+
       - name: Upload Linux x86_64 public API gate report
         if: always()
         uses: actions/upload-artifact@v6
@@ -514,10 +616,12 @@ jobs:
 
   public-api-gate-linux-arm64:
     name: Public API Gate Linux arm64
+    if: ${{ always() && (needs.package-linux-arm64.result == 'success' || needs.package-linux-arm64-m2.result == 'success') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     needs:
       - package-linux-arm64
+      - package-linux-arm64-m2
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -525,7 +629,7 @@ jobs:
       - name: Download Linux arm64 artifacts
         uses: actions/download-artifact@v6
         with:
-          name: rivulet-linux-arm64
+          name: ${{ needs.package-linux-arm64.result == 'success' && 'rivulet-linux-arm64' || 'rivulet-ci-sampling-linux-arm64' }}
           path: ci-public-api-assets/arm64
 
       - name: Resolve Linux arm64 tarball
@@ -550,6 +654,23 @@ jobs:
             --backend-port 19684 \
             --output-dir "$RUNNER_TEMP/rivulet-ci-public-api-gate-arm"
 
+      - name: Persist CI gate sampling metadata
+        run: |
+          metadata_dir="$RUNNER_TEMP/rivulet-ci-public-api-gate-arm"
+          mkdir -p "$metadata_dir"
+          {
+            echo "{"
+            echo "  \"generated_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+            echo "  \"workflow\": \"ci\","
+            echo "  \"event_name\": \"${{ github.event_name }}\","
+            echo "  \"run_mode\": \"${{ env.RIVULET_CI_RUN_MODE }}\","
+            echo "  \"sampling_label\": \"${{ env.RIVULET_CI_SAMPLING_LABEL }}\","
+            echo "  \"run_id\": \"${{ github.run_id }}\","
+            echo "  \"run_attempt\": \"${{ github.run_attempt }}\","
+            echo "  \"arch\": \"linux-arm64\""
+            echo "}"
+          } > "$metadata_dir/sampling-metadata.json"
+
       - name: Upload Linux arm64 public API gate report
         if: always()
         uses: actions/upload-artifact@v6
@@ -560,6 +681,7 @@ jobs:
 
   supply-chain:
     name: Supply Chain Checks
+    if: ${{ env.RIVULET_CI_RUN_MODE == 'full' }}
     runs-on: ubuntu-24.04
     needs:
       - package-linux-x86_64
