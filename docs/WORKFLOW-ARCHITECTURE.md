@@ -10,7 +10,7 @@ Repository workflows:
 
 ### Trigger model
 
-- `ci`: branch `push`, `pull_request`, `workflow_dispatch`
+- `ci`: branch `push`, `pull_request`, schedule, `workflow_dispatch`
 - `release`: tag `v*` push, schedule, `workflow_dispatch`
 - `nightly-benchmark`: schedule + manual dispatch
 
@@ -66,6 +66,11 @@ flowchart TD
 - CI and release both use `--profile standard`.
 - Both Linux architectures are mandatory.
 - Any public-api gate failure blocks downstream publish chain (`supply-chain` in CI, `publish` in release).
+- CI now supports M2 sampling mode:
+  - schedule runs are forced into `m2-sampling`
+  - `workflow_dispatch` can select `run_mode=full|m2-sampling`
+  - `m2-sampling` executes only script-standards + Linux package + CI public-api gate jobs
+  - windows/systemd/disposable-contract/supply-chain jobs are skipped in `m2-sampling`
 - Release disposable lifecycle gates (`tar.gz` full + `rpm` install-uninstall) are hard blockers before `publish`.
 - Release now supports M2 sampling mode:
   - schedule runs are forced into `m2-sampling`
@@ -92,10 +97,10 @@ Public API gate jobs upload:
 
 - `result.json`
 - `summary.md`
-- `sampling-metadata.json` (release public-api gate jobs)
+- `sampling-metadata.json` (CI + release public-api gate jobs)
 
 These artifacts include architecture, duration profile, request-floor checks, and explicit failure reasons.
-For release sampling mode, metadata also records `run_mode`, `event_name`, `sampling_label`, and `run_id` for M2 audit traceability.
+For CI/release sampling modes, metadata also records `run_mode`, `event_name`, `sampling_label`, and `run_id` for M2 audit traceability.
 
 Release disposable lifecycle jobs upload:
 
@@ -118,6 +123,8 @@ Nightly calibration summary uploads:
 - `m2-nightly-review-package.md` (already includes release sample-quality summary)
 
 These artifacts support manual threshold tuning and milestone-2 closure tracking (10 consecutive dual-arch green runs in both CI and release).
+Weekly/review artifacts also summarize CI sample quality (`ci_eligible_runs`, latest eligible CI run id/time) for closure acceleration diagnostics.
+This M2 sampling acceleration is a reliability and observability hardening batch, not a threshold-relaxation batch.
 
 Nightly dispatch metadata:
 
@@ -154,7 +161,7 @@ G3.4.1 说明（中文）:
 
 ### 触发模型
 
-- `ci`：分支 `push`、`pull_request`、`workflow_dispatch`
+- `ci`：分支 `push`、`pull_request`、定时、`workflow_dispatch`
 - `release`：`v*` tag 推送、`workflow_dispatch`
 - `nightly-benchmark`：定时 + 手动触发
 
@@ -165,6 +172,11 @@ G3.4.1 说明（中文）:
 - 任一门禁失败即阻断后续链路：
   - CI 阻断 `supply-chain`
   - release 阻断 `publish`
+- CI 已支持 M2 采样模式：
+  - schedule 触发强制使用 `m2-sampling`
+  - `workflow_dispatch` 可选 `run_mode=full|m2-sampling`
+  - `m2-sampling` 仅执行 script-standards + Linux 打包 + CI public-api gate
+  - `m2-sampling` 跳过 windows/systemd/disposable-contract/supply-chain 作业
 - release 已新增一次性环境全生命周期门禁（`tar.gz` 全流程 + `rpm` 安装/卸载），任一失败都会阻断 `publish`。
 - CI 已新增一次性环境全生命周期脚本的轻量契约检查，用于提前发现脚本接口漂移。
 - nightly 已新增双架构 observe 采样与校准/连续全绿统计汇总，用于阈值校准证据沉淀。
@@ -181,8 +193,10 @@ G3.4.1 说明（中文）:
 
 - `result.json`
 - `summary.md`
+- `sampling-metadata.json`（CI + release public-api gate）
 
 产物中包含架构、时长档位、最小样本门槛检查与明确失败原因，便于回溯审计。
+采样模式下还会记录 `run_mode`、`event_name`、`sampling_label`、`run_id`，用于 M2 收口审计追踪。
 
 一次性环境全生命周期门禁 job 固定上传：
 
@@ -200,6 +214,8 @@ nightly 校准汇总 job 固定上传：
 - `sampling-metadata.json`
 
 产物用于“先报告后调阈值”的校准闭环和“连续 10 次双架构全绿”收口跟踪。
+weekly/review 产物会补充 CI 样本质量摘要（`ci_eligible_runs` 与最新 eligible CI run 信息），用于收口加速诊断。
+本批为采样加速与可观测性加固，不涉及阈值放宽。
 
 ### CI 卡死治理边界
 

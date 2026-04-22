@@ -46,6 +46,15 @@ Release target: `v<version>`
 - [ ] Release public-api gate artifacts include `sampling-metadata.json`
 - [ ] `sampling-metadata.json` contains run_mode/event_name/sampling_label/run_id/arch
 
+### M2 Sampling Mode Checks (CI)
+
+- [ ] `ci.yml` supports `run_mode=full|m2-sampling`
+- [ ] Scheduled CI sampling trigger is enabled (`30 2,12 * * *` UTC)
+- [ ] `m2-sampling` runs only script-standards + Linux package + public-api gate x86_64/arm64
+- [ ] `m2-sampling` does not execute windows/systemd/disposable-contract/supply-chain jobs
+- [ ] CI public-api gate artifacts include `sampling-metadata.json`
+- [ ] `sampling-metadata.json` contains run_mode/event_name/sampling_label/run_id/arch
+
 ### Release Assets
 
 - [ ] Windows `.zip`
@@ -86,6 +95,7 @@ Release target: `v<version>`
 - [ ] `recent_failure_reasons` and `recent_ineligible_reasons` are reviewed separately before closure decisions
 - [ ] Manual nightly sampling runs are executed and tagged with slot/label metadata (`am-1030` / `pm-2030`)
 - [ ] If `rollback_recommended=true`, latest threshold PR is rolled back before any new threshold tuning PR
+- [ ] Confirm this batch is sampling acceleration and reporting hardening, not threshold relaxation
 
 ### Recommended Linux Host Validation
 
@@ -140,6 +150,15 @@ Release target: `v<version>`
 - [ ] release public-api gate 产物包含 `sampling-metadata.json`
 - [ ] `sampling-metadata.json` 包含 run_mode/event_name/sampling_label/run_id/arch 字段
 
+### M2 采样模式检查（CI）
+
+- [ ] `ci.yml` 支持 `run_mode=full|m2-sampling`
+- [ ] 已启用 CI 定时采样触发（`30 2,12 * * *` UTC）
+- [ ] `m2-sampling` 仅执行 script-standards + Linux 打包 + public-api gate x86_64/arm64
+- [ ] `m2-sampling` 不执行 windows/systemd/disposable-contract/supply-chain
+- [ ] CI public-api gate 产物包含 `sampling-metadata.json`
+- [ ] `sampling-metadata.json` 包含 run_mode/event_name/sampling_label/run_id/arch 字段
+
 ### 发布产物
 
 - [ ] Windows `.zip`
@@ -180,6 +199,7 @@ Release target: `v<version>`
 - [ ] 已分别审阅 `recent_failure_reasons` 与 `recent_ineligible_reasons`，避免噪声误判为 gate 回归
 - [ ] 已执行手动 nightly 补采样并记录 slot/label 元数据（`am-1030` / `pm-2030`）
 - [ ] 若 `rollback_recommended=true`，已先回滚最近阈值 PR，再评估新的阈值调整
+- [ ] 已确认本批是采样加速与证据链加固，而非阈值放宽
 
 ### 推荐 Linux 主机验证
 

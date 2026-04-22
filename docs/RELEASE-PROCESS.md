@@ -14,6 +14,19 @@ This document defines the formal release process for `Rivulet Gateway / 溪流�
 ### Release Trigger Model
 
 - Regular `push` and `pull_request` events run `.github/workflows/ci.yml`.
+- CI workflow now also runs on a schedule (`30 2,12 * * *` UTC) for M2 closure sampling acceleration.
+- `workflow_dispatch` CI inputs now include:
+  - `run_mode=full|m2-sampling` (default `full`)
+  - `sampling_label` (optional audit label)
+- CI run-mode contract:
+  - push/pull_request -> `full`
+  - scheduled run -> forced `m2-sampling`
+  - workflow_dispatch -> follows `run_mode` input
+- In `m2-sampling` mode, CI runs only:
+  - `script-standards`
+  - Linux package jobs (`x86_64` and `arm64`)
+  - public-api gate jobs (`x86_64` and `arm64`)
+- In `m2-sampling` mode, CI intentionally skips windows/systemd/disposable-contract/supply-chain jobs.
 - Nightly benchmark collection runs `.github/workflows/nightly-benchmark.yml`.
 - Pushing a tag such as `v0.1.5` runs `.github/workflows/release.yml`.
 - Release workflow now also runs on a schedule (`30 2,12 * * *` UTC) for M2 closure sampling.
@@ -55,6 +68,13 @@ This document defines the formal release process for `Rivulet Gateway / 溪流�
 - M2 closure streak counting for release is based on eligible `Release Public API Gate` runs, not on publish execution.
 - Release gate artifacts now include `sampling-metadata.json` (run_mode, event_name, sampling_label, run_id, timestamp, arch).
 - During M2 closure sprint, use scheduled + manual sampling to continuously increase release eligible samples.
+
+### M2 CI Sampling Notes
+
+- M2 closure streak counting for CI is based on eligible `Public API Gate` runs, not on non-gate jobs.
+- CI gate artifacts now include `sampling-metadata.json` (run_mode, event_name, sampling_label, run_id, timestamp, arch).
+- During M2 closure sprint, use scheduled + manual sampling to continuously increase CI eligible samples.
+- This M2 sampling acceleration is observability and evidence hardening; it is not threshold relaxation.
 
 ### M2 Threshold Tuning Review Flow
 
@@ -159,6 +179,19 @@ The release process now includes keyless detached per-asset signing, checksum co
 ### 触发模型
 
 - 常规 `push` 和 `pull_request` 触发 `.github/workflows/ci.yml`。
+- CI workflow 会在定时任务下触发（`30 2,12 * * *` UTC），用于 M2 收口采样加速。
+- `workflow_dispatch` 的 CI 输入包括：
+  - `run_mode=full|m2-sampling`（默认 `full`）
+  - `sampling_label`（可选审计标签）
+- CI 运行模式约定：
+  - push/pull_request -> `full`
+  - schedule -> 强制 `m2-sampling`
+  - workflow_dispatch -> 按 `run_mode` 输入执行
+- `m2-sampling` 模式下，CI 仅运行：
+  - `script-standards`
+  - Linux 打包（`x86_64` / `arm64`）
+  - public-api gate（`x86_64` / `arm64`）
+- `m2-sampling` 模式下，CI 不运行 windows/systemd/disposable-contract/supply-chain 作业。
 - 夜间基线压测触发 `.github/workflows/nightly-benchmark.yml`。
 - 推送 `v0.1.5` 这类 tag 会触发 `.github/workflows/release.yml`。
 - release workflow 会构建 Linux x86_64、Linux arm64、Windows x86_64 三类产物。
@@ -270,3 +303,10 @@ cargo test --workspace
    - 每日增加两次 `workflow_dispatch`（建议北京时间 10:30、20:30）；
    - 在 nightly 元数据产物中记录补采样 slot/label，便于审阅追踪。
 9. 若收口产物出现 `rollback_recommended=true`，必须先回滚最近阈值 PR，再考虑新的阈值调整。
+
+### M2 CI 采样说明
+
+- M2 收口阶段，CI 连绿统计以 eligible `Public API Gate` 样本为准，不以非 gate 作业结论替代。
+- CI 的 public-api gate 产物已包含 `sampling-metadata.json`（run_mode、event_name、sampling_label、run_id、timestamp、arch）。
+- M2 收口冲刺阶段采用“定时 + 手动”采样节奏，持续提升 CI eligible 样本数量。
+- 本批为采样和证据链加固，不是阈值放宽。
