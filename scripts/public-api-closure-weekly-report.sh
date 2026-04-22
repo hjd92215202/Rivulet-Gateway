@@ -206,7 +206,14 @@ ci_failure_streak = longest_eligible_failure_streak(ci_runs, window)
 release_failure_streak = longest_eligible_failure_streak(release_runs, window)
 rollback_recommended = bool(closure_status.get("rollback_recommended", False))
 
+ci_eligible_runs = int(ci_streak.get("eligible_runs", 0))
 release_eligible_runs = int(release_streak.get("eligible_runs", 0))
+latest_ci_eligible = None
+for item in ci_runs:
+    if bool(item.get("eligible_for_streak", False)):
+        latest_ci_eligible = item
+        break
+
 latest_release_eligible = None
 for item in release_runs:
     if bool(item.get("eligible_for_streak", False)):
@@ -238,6 +245,9 @@ lines = [
     f"- Release dual-arch success (last {release_total}): `{release_success}/{release_total}` (`{release_rate:.2f}%`)",
     f"- CI consecutive eligible failures: `{ci_failure_streak}`",
     f"- Release consecutive eligible failures: `{release_failure_streak}`",
+    f"- ci_eligible_runs: `{ci_eligible_runs}`",
+    f"- latest_ci_eligible_run_id: `{latest_ci_eligible.get('run_id') if latest_ci_eligible else 'none'}`",
+    f"- latest_ci_eligible_created_at: `{latest_ci_eligible.get('created_at') if latest_ci_eligible else 'none'}`",
     f"- release_eligible_runs: `{release_eligible_runs}`",
     f"- latest_release_eligible_run_id: `{latest_release_eligible.get('run_id') if latest_release_eligible else 'none'}`",
     f"- latest_release_eligible_created_at: `{latest_release_eligible.get('created_at') if latest_release_eligible else 'none'}`",
