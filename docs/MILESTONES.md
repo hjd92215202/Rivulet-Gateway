@@ -23,7 +23,7 @@ Status: completed
 
 ### Milestone 2: Production edge foundation
 
-Status: in progress (major gates closed)
+Status: completed (closure target reached)
 
 Closed:
 
@@ -148,14 +148,20 @@ G3.4.1 新增收口（执行工具链）:
 - nightly 汇总新增 `milestone2-closure-status.json/.md`（里程碑 2 收口状态汇总）
 - streak 报告新增 `closure_ready` 与 `remaining_to_target`（连续全绿收口追踪）
 
-Remaining in Milestone 2:
+Closure evidence (2026-04-27):
 
-- threshold tuning iteration on stable Linux runners
-- reach closure target: 10 consecutive dual-architecture green runs under current `standard` blocking profile (CI + release eligible runs)
+- CI public-api gate eligible streak: `15` consecutive dual-architecture successes (`remaining_to_target=0`)
+- release public-api gate eligible streak: `19` consecutive dual-architecture successes (`remaining_to_target=0`)
+- `standard` dual-blocking policy remained unchanged during closure sprint
+- closure semantics remained eligible-only; skip/missing runs were treated as `not_eligible` noise (not counted as failures)
+
+Post-closure carry-over:
+
+- continue per-architecture threshold tuning iteration on stable Linux runners (moves into Milestone 3 reliability hardening stream)
 
 ### Milestone 3: Public Internet scale hardening
 
-Status: not started
+Status: in progress
 
 - larger capacity confidence on dedicated Linux benchmark hosts
 - longer soak and stronger failure-injection suites
@@ -192,7 +198,7 @@ Status: not started
 
 ### 里程碑 2：生产边缘基础
 
-状态：进行中（核心门禁已收口）
+状态：已完成（收口目标已达成）
 
 已收口：
 
@@ -241,14 +247,20 @@ G3.4 新增收口（工具链基线）：
 - nightly 汇总已新增校准报告产物（`calibration-report.json` / `calibration-report.md`）
 - nightly 汇总已新增 CI/release 连续全绿统计产物（`streak-report.json` / `streak-report.md`）
 
-里程碑 2 剩余项：
+收口证据（2026-04-27）：
 
-- 在稳定 Linux runner 上持续校准阈值
-- 在当前 `standard` 阻断口径下达成“连续 10 次双架构全绿”收口目标
+- CI public-api gate 有效样本连绿：双架构连续成功 `15` 次（`remaining_to_target=0`）
+- release public-api gate 有效样本连绿：双架构连续成功 `19` 次（`remaining_to_target=0`）
+- 收口期间 `standard` 双阻断口径未放宽
+- 连绿统计保持“仅有效样本”语义，skip/missing 按 `not_eligible` 噪声处理，不计失败
+
+收口后延续项：
+
+- 在稳定 Linux runner 上持续按架构阈值校准（转入里程碑 3 的可靠性加固主线）
 
 ### 里程碑 3：公网规模化加固
 
-状态：未开始
+状态：进行中
 
 - 在专用 Linux 压测机上提升容量置信度
 - 拉长 soak 与增强故障注入演练

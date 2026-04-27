@@ -38,7 +38,9 @@ Project: `Rivulet Gateway / 溪流网关`
 Current status:
 
 - production-gray usable for API-first traffic
-- not yet declared as broad public-edge mixed-traffic gateway
+- Milestone 2 closure is reached as of April 27, 2026 under unchanged `standard` dual-blocking policy
+- gateway is ready for default production entry in API-priority projects within current protocol scope (HTTP/1.1)
+- next hardening focus is Milestone 3 public-Internet scale confidence (longer soak and stronger failure injection)
 
 The main progress of this batch:
 
@@ -263,8 +265,21 @@ The main progress of this batch:
 ### Remaining production-hardening gaps
 
 1. continue per-architecture threshold tuning on stable Linux runners
-2. reach and hold the milestone-2 closure target of 10 consecutive dual-architecture green runs
+2. expand long-soak and failure-injection depth on dedicated Linux benchmark hosts (Milestone 3 mainline)
 3. advance operational maturity for multi-team incident workflows
+
+### Milestone 2 closure evidence snapshot (2026-04-27)
+
+- CI public-api gate eligible streak: `15` consecutive dual-architecture successes (`closure_ready=true`, `remaining_to_target=0`)
+- release public-api gate eligible streak: `19` consecutive dual-architecture successes (`closure_ready=true`, `remaining_to_target=0`)
+- cutover interpretation:
+  - `ci_closure_ready=true`
+  - `release_closure_ready=true`
+  - `overall_closure_ready=true`
+- closure semantics remained strict:
+  - only eligible gate runs count toward streak
+  - `skipped`/`missing` gate runs are `not_eligible` noise, not counted as failures
+  - no threshold relaxation and no blocking downgrade were introduced
 
 ## 中文
 
@@ -276,7 +291,9 @@ The main progress of this batch:
 当前状态：
 
 - 已可用于 API 优先场景的生产灰度
-- 仍未声明可直接承接大规模公网混合流量入口
+- 在 `standard` 双阻断口径不变前提下，Milestone 2 已于 2026-04-27 达成收口
+- 在当前协议边界（HTTP/1.1）内，网关可作为 API 优先项目的默认生产入口
+- 下一阶段主线切换到 Milestone 3（更长 soak + 更强故障注入）
 
 本批次核心进展：
 
@@ -376,5 +393,18 @@ The main progress of this batch:
 ### 仍需继续推进的生产加固项
 
 1. 在稳定 Linux runner 上继续做按架构阈值校准
-2. 达成并保持“连续 10 次双架构全绿”的里程碑收口目标
+2. 在专用 Linux 压测机上扩展长时 soak 与故障注入深度（Milestone 3 主线）
 3. 提升多团队协同下的运维与应急成熟度
+
+### Milestone 2 收口证据快照（2026-04-27）
+
+- CI public-api gate 有效样本连绿：双架构连续成功 `15` 次（`closure_ready=true`，`remaining_to_target=0`）
+- release public-api gate 有效样本连绿：双架构连续成功 `19` 次（`closure_ready=true`，`remaining_to_target=0`）
+- 切线判定解释：
+  - `ci_closure_ready=true`
+  - `release_closure_ready=true`
+  - `overall_closure_ready=true`
+- 收口语义保持严格：
+  - 仅有效 gate run 计入连绿
+  - gate `skipped`/`missing` 视为 `not_eligible` 噪声，不计失败
+  - 未放宽阈值，未降低阻断强度
